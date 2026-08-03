@@ -1,0 +1,111 @@
+name: Build Android 4.19 phase 1 dream2lte DTB
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dtb-bringup:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential flex gcc-aarch64-linux-gnu libelf-dev libssl-dev python3 rsync
+      - name: Fetch pinned Android 4.19 base
+        run: |
+          mkdir kernel-4.19
+          git -C kernel-4.19 init
+          git -C kernel-4.19 remote add origin https://android.googlesource.com/kernel/common
+          git -C kernel-4.19 fetch --depth=1 origin a8bf86a0e0fa05070897a210d706d5c4d83c26ac
+          git -C kernel-4.19 checkout --detach FETCH_HEAD
+          test "$(git -C kernel-4.19 rev-parse HEAD)" = "a8bf86a0e0fa05070897a210d706d5c4d83c26ac"
+      - name: Fetch pinned Exynos8895 4.4 source
+        run: |
+          mkdir exynos8895-4.4
+          git -C exynos8895-4.4 init
+          git -C exynos8895-4.4 remote add origin https://github.com/boloaimer/exynos-8895.git
+          git -C exynos8895-4.4 fetch --depth=1 origin dcdaf6878e7f9497e1d90e25980decfa5d684f74
+          git -C exynos8895-4.4 checkout --detach FETCH_HEAD
+          test "$(git -C exynos8895-4.4 rev-parse HEAD)" = "dcdaf6878e7f9497e1d90e25980decfa5d684f74"
+      - name: Import exact dream2lte DTS dependency closure
+        run: |
+          cat > dream2lte-dts-files.txt <<'EOF'
+          arch/arm64/boot/dts/exynos/battery_data_dream2lte_common.dtsi
+          arch/arm64/boot/dts/exynos/battery_data_dream2lte_eur_09.dtsi
+          arch/arm64/boot/dts/exynos/ccic-s2mm005_01.dtsi
+          arch/arm64/boot/dts/exynos/exynos8895-display-lcd.dtsi
+          arch/arm64/boot/dts/exynos/exynos8895-dream2lte_common.dtsi
+          arch/arm64/boot/dts/exynos/exynos8895-dream2lte_eur_open_10.dts
+          arch/arm64/boot/dts/exynos/exynos8895-dream2lte_gpio_10.dtsi
+          arch/arm64/boot/dts/exynos/exynos8895-dream2lte_motor.dtsi
+          arch/arm64/boot/dts/exynos/exynos8895-dream2lte_svcled.dtsi
+          arch/arm64/boot/dts/exynos/exynos8895-dreamlte_fingerprint-sensor_10.dtsi
+          arch/arm64/boot/dts/exynos/exynos8895-dreamlte_mst_00.dtsi
+          arch/arm64/boot/dts/exynos/exynos8895-ess.dtsi
+          arch/arm64/boot/dts/exynos/exynos8895-pinctrl.dtsi
+          arch/arm64/boot/dts/exynos/exynos8895-pm-domains.dtsi
+          arch/arm64/boot/dts/exynos/exynos8895-rmem.dtsi
+          arch/arm64/boot/dts/exynos/exynos8895-tmu-sensor-conf.dtsi
+          arch/arm64/boot/dts/exynos/exynos8895.dtsi
+          arch/arm64/boot/dts/exynos/exynos_gpio_config_macros.dtsi
+          arch/arm64/boot/dts/exynos/modem-ss355ap-pdata.dtsi
+          include/dt-bindings/clock/exynos8895.h
+          include/dt-bindings/power/exynos-power.h
+          include/dt-bindings/soc/samsung/exynos8895.h
+          include/dt-bindings/sysmmu/sysmmu.h
+          include/dt-bindings/thermal/thermal.h
+          include/dt-bindings/thermal/thermal_exynos.h
+          include/dt-bindings/ufs/ufs.h
+          EOF
+          while IFS= read -r path; do
+            mkdir -p "kernel-4.19/$(dirname "$path")"
+            cp -a "exynos8895-4.4/$path" "kernel-4.19/$path"
+          done < dream2lte-dts-files.txt
+          (cd exynos8895-4.4 && xargs sha256sum < ../dream2lte-dts-files.txt) > dream2lte-dts-source-SHA256SUMS.txt
+          (cd kernel-4.19 && xargs sha256sum < ../dream2lte-dts-files.txt) > dream2lte-dts-imported-SHA256SUMS.txt
+          diff -u dream2lte-dts-source-SHA256SUMS.txt dream2lte-dts-imported-SHA256SUMS.txt
+      - name: Register dream2lte DTB target
+        run: |
+          printf '\ndtb-$(CONFIG_ARCH_EXYNOS) += exynos8895-dream2lte_eur_open_10.dtb\n' >> kernel-4.19/arch/arm64/boot/dts/exynos/Makefile
+      - name: Configure generic arm64
+        run: |
+          make -C kernel-4.19 O="$GITHUB_WORKSPACE/out-4.19-dtb" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+          cp out-4.19-dtb/.config phase1-defconfig
+      - name: Compile dream2lte DTB and capture blockers
+        run: |
+          set +e
+          set -o pipefail
+          make -C kernel-4.19 O="$GITHUB_WORKSPACE/out-4.19-dtb" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j2 exynos8895-dream2lte_eur_open_10.dtb 2>&1 | tee phase1-dtb-build.log
+          status=${PIPESTATUS[0]}
+          echo "$status" > phase1-exit-code.txt
+          exit 0
+      - name: Collect outputs
+        if: always()
+        run: |
+          find out-4.19-dtb -name 'exynos8895-dream2lte_eur_open_10.dtb' -type f -exec cp {} . \; || true
+          if test -s exynos8895-dream2lte_eur_open_10.dtb; then
+            sha256sum exynos8895-dream2lte_eur_open_10.dtb > phase1-dtb-SHA256SUMS.txt
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-4.19-phase1-dream2lte-dtb
+          path: |
+            exynos8895-dream2lte_eur_open_10.dtb
+            phase1-defconfig
+            phase1-dtb-build.log
+            phase1-exit-code.txt
+            phase1-dtb-SHA256SUMS.txt
+            dream2lte-dts-files.txt
+            dream2lte-dts-source-SHA256SUMS.txt
+            dream2lte-dts-imported-SHA256SUMS.txt
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Enforce compile result
+        run: exit "$(cat phase1-exit-code.txt)"
