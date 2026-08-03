@@ -61,9 +61,11 @@ jobs:
         run: |
           set +e
           set -o pipefail
-          make O="$GITHUB_WORKSPACE/out-phase3-clock" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- prepare scripts
-          make O="$GITHUB_WORKSPACE/out-phase3-clock" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j2 \
-            drivers/clk/samsung/clk-exynos8895.o \
+          CAL_DEFINES='-DCONFIG_CAL_IF -DCONFIG_CMUCAL -DCONFIG_SOC_EXYNOS8895'
+          make O="$GITHUB_WORKSPACE/out-phase3-clock" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            KCFLAGS="$CAL_DEFINES" prepare scripts
+          make O="$GITHUB_WORKSPACE/out-phase3-clock" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            KCFLAGS="$CAL_DEFINES" -j2 drivers/clk/samsung/clk-exynos8895.o \
             2>&1 | tee phase3-clock-build.log
           status=${PIPESTATUS[0]}
           echo "$status" > phase3-clock-exit-code.txt
@@ -81,6 +83,7 @@ jobs:
             echo 'scope=compile-probe-only'
             echo 'kernel=4.19.325'
             echo 'subsystem=Exynos8895 clock provider'
+            echo 'compile_path=linux-cal'
             echo "compile_exit=$(cat phase3-clock-exit-code.txt)"
             echo 'physical_boot=not_tested'
           } > phase3-clock-status.txt
