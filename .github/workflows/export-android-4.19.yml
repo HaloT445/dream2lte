@@ -13,13 +13,15 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 90
     steps:
-      - name: Clone pinned Android 4.19 stable base
+      - name: Fetch pinned Android 4.19 stable base
         run: |
-          git clone --filter=blob:none https://android.googlesource.com/kernel/common android-4.19
-          cd android-4.19
-          git checkout a8bf86a0e0fa05070897a210d706d5c4d83c26ac
-          test "$(git rev-parse HEAD)" = "a8bf86a0e0fa05070897a210d706d5c4d83c26ac"
-          rm -rf .git
+          mkdir android-4.19
+          git -C android-4.19 init
+          git -C android-4.19 remote add origin https://android.googlesource.com/kernel/common
+          git -C android-4.19 fetch --depth=1 origin a8bf86a0e0fa05070897a210d706d5c4d83c26ac
+          git -C android-4.19 checkout --detach FETCH_HEAD
+          test "$(git -C android-4.19 rev-parse HEAD)" = "a8bf86a0e0fa05070897a210d706d5c4d83c26ac"
+          rm -rf android-4.19/.git
       - name: Record provenance
         run: |
           cat > android-4.19/ALICE_4_19_BASE.txt <<'EOF'
