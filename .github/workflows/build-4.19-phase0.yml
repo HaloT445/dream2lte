@@ -16,7 +16,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential flex libelf-dev libssl-dev python3 rsync
+          sudo apt-get install -y bc bison build-essential flex gcc-aarch64-linux-gnu libelf-dev libssl-dev python3 rsync
       - name: Fetch pinned Android 4.19 base
         run: |
           mkdir kernel-4.19
@@ -27,12 +27,12 @@ jobs:
           test "$(git -C kernel-4.19 rev-parse HEAD)" = "a8bf86a0e0fa05070897a210d706d5c4d83c26ac"
       - name: Configure generic arm64
         run: |
-          make -C kernel-4.19 O="$GITHUB_WORKSPACE/out-4.19" ARCH=arm64 LLVM=1 LLVM_IAS=1 defconfig
+          make -C kernel-4.19 O="$GITHUB_WORKSPACE/out-4.19" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
           cp out-4.19/.config phase0-defconfig
       - name: Build generic arm64 Image
         run: |
           set -o pipefail
-          make -C kernel-4.19 O="$GITHUB_WORKSPACE/out-4.19" ARCH=arm64 LLVM=1 LLVM_IAS=1 -j2 Image 2>&1 | tee phase0-build.log
+          make -C kernel-4.19 O="$GITHUB_WORKSPACE/out-4.19" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j2 Image 2>&1 | tee phase0-build.log
       - name: Verify output
         run: |
           test -s out-4.19/arch/arm64/boot/Image
