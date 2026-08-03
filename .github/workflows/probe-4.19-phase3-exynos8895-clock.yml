@@ -68,7 +68,7 @@ jobs:
         run: |
           set +e
           set -o pipefail
-          CAL_DEFINES='-DCONFIG_CAL_IF -DCONFIG_CMUCAL -DCONFIG_SOC_EXYNOS8895'
+          CAL_DEFINES='-DCONFIG_CAL_IF -DCONFIG_CMUCAL -DCONFIG_SOC_EXYNOS8895 -DCLK_IS_ROOT=0'
           make O="$GITHUB_WORKSPACE/out-phase3-clock" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             KCFLAGS="$CAL_DEFINES" prepare scripts
           make O="$GITHUB_WORKSPACE/out-phase3-clock" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
@@ -97,6 +97,7 @@ jobs:
             echo 'kernel=4.19.325'
             echo 'subsystem=Exynos8895 clock provider and Samsung composite layer'
             echo 'compile_path=linux-cal'
+            echo 'compat_clk_is_root=zero'
             echo 'exynos_snapshot=disabled-noop-interface-only'
             echo "compile_exit=$(cat phase3-clock-exit-code.txt)"
             echo 'physical_boot=not_tested'
