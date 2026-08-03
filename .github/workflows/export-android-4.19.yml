@@ -1,0 +1,43 @@
+name: Export Android 4.19 base
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - name: Clone pinned Android 4.19 stable base
+        run: |
+          git clone --filter=blob:none https://android.googlesource.com/kernel/common android-4.19
+          cd android-4.19
+          git checkout a8bf86a0e0fa05070897a210d706d5c4d83c26ac
+          test "$(git rev-parse HEAD)" = "a8bf86a0e0fa05070897a210d706d5c4d83c26ac"
+          rm -rf .git
+      - name: Record provenance
+        run: |
+          cat > android-4.19/ALICE_4_19_BASE.txt <<'EOF'
+          source=https://android.googlesource.com/kernel/common
+          branch=deprecated/android-4.19-stable
+          commit=a8bf86a0e0fa05070897a210d706d5c4d83c26ac
+          target=dream2lte Exynos 8895 bring-up
+          status=base-only-not-device-bootable
+          EOF
+      - name: Archive source tree
+        run: |
+          tar -C android-4.19 -cJf "$GITHUB_WORKSPACE/android-common-4.19-stable-a8bf86a.tar.xz" .
+          test -s "$GITHUB_WORKSPACE/android-common-4.19-stable-a8bf86a.tar.xz"
+          sha256sum "$GITHUB_WORKSPACE/android-common-4.19-stable-a8bf86a.tar.xz" > "$GITHUB_WORKSPACE/SHA256SUMS-4.19.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-common-4.19-stable-a8bf86a
+          path: |
+            android-common-4.19-stable-a8bf86a.tar.xz
+            SHA256SUMS-4.19.txt
+          retention-days: 1
