@@ -1,4 +1,4 @@
-name: Export upstream base
+name: Export locked dependencies
 
 on:
   pull_request:
@@ -11,18 +11,23 @@ jobs:
   export:
     runs-on: ubuntu-22.04
     steps:
-      - name: Clone locked upstream base
+      - name: Clone locked dependencies
         run: |
-          git clone --filter=blob:none https://github.com/boloaimer/exynos-8895.git base
-          cd base
-          git checkout dcdaf6878e7f9497e1d90e25980decfa5d684f74
-          rm -rf .git
-      - name: Archive base tree
+          git clone --filter=blob:none https://github.com/tiann/KernelSU.git KernelSU
+          git -C KernelSU checkout ee03fa5bdd1eece21b15581b3bccd06c9d30afc1
+          rm -rf KernelSU/.git
+
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
+          git -C susfs4ksu checkout 2404aebaeee041c8e0e06ca4636dc87b984c2428
+          rm -rf susfs4ksu/.git
+      - name: Archive dependency trees
         run: |
-          tar -C base -czf "$GITHUB_WORKSPACE/exynos8895-base.tar.gz" . || test -s "$GITHUB_WORKSPACE/exynos8895-base.tar.gz"
-          test -s "$GITHUB_WORKSPACE/exynos8895-base.tar.gz"
+          tar -czf kernelsu.tar.gz KernelSU
+          tar -czf susfs4ksu.tar.gz susfs4ksu
       - uses: actions/upload-artifact@v4
         with:
-          name: exynos8895-base
-          path: exynos8895-base.tar.gz
+          name: locked-dependencies
+          path: |
+            kernelsu.tar.gz
+            susfs4ksu.tar.gz
           retention-days: 1
