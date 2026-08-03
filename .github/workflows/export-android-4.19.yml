@@ -33,13 +33,13 @@ jobs:
           EOF
       - name: Archive source tree
         run: |
-          tar -C android-4.19 -cJf "$GITHUB_WORKSPACE/android-common-4.19-stable-a8bf86a.tar.xz" .
-          test -s "$GITHUB_WORKSPACE/android-common-4.19-stable-a8bf86a.tar.xz"
-          sha256sum "$GITHUB_WORKSPACE/android-common-4.19-stable-a8bf86a.tar.xz" > "$GITHUB_WORKSPACE/SHA256SUMS-4.19.txt"
+          tar -C android-4.19 -czf "$GITHUB_WORKSPACE/android-common-4.19-stable-a8bf86a.tar.gz" .
+          test -s "$GITHUB_WORKSPACE/android-common-4.19-stable-a8bf86a.tar.gz"
+          sha256sum "$GITHUB_WORKSPACE/android-common-4.19-stable-a8bf86a.tar.gz" > "$GITHUB_WORKSPACE/SHA256SUMS-4.19.txt"
       - uses: actions/upload-artifact@v4
         with:
-          name: android-common-4.19-stable-a8bf86a
+          name: android-common-4.19-stable-a8bf86a-gzip
           path: |
-            android-common-4.19-stable-a8bf86a.tar.xz
+            android-common-4.19-stable-a8bf86a.tar.gz
             SHA256SUMS-4.19.txt
           retention-days: 1
