@@ -18,7 +18,9 @@ jobs:
           git checkout dcdaf6878e7f9497e1d90e25980decfa5d684f74
           rm -rf .git
       - name: Archive base tree
-        run: tar -C base -czf "$GITHUB_WORKSPACE/exynos8895-base.tar.gz" .
+        run: |
+          tar -C base -czf "$GITHUB_WORKSPACE/exynos8895-base.tar.gz" . || test -s "$GITHUB_WORKSPACE/exynos8895-base.tar.gz"
+          test -s "$GITHUB_WORKSPACE/exynos8895-base.tar.gz"
       - uses: actions/upload-artifact@v4
         with:
           name: exynos8895-base
