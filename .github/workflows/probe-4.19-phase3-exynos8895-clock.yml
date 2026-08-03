@@ -1,0 +1,105 @@
+name: Probe Android 4.19 phase 3 Exynos8895 clock
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  clock-probe:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout materialized Linux 4.19 source
+        uses: actions/checkout@v4
+        with:
+          ref: port/linux-4.19-source
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential flex gcc-aarch64-linux-gnu libelf-dev libssl-dev python3 rsync
+
+      - name: Fetch pinned Exynos8895 4.4 source
+        run: |
+          mkdir exynos8895-4.4
+          git -C exynos8895-4.4 init
+          git -C exynos8895-4.4 remote add origin https://github.com/boloaimer/exynos-8895.git
+          git -C exynos8895-4.4 fetch --depth=1 origin dcdaf6878e7f9497e1d90e25980decfa5d684f74
+          git -C exynos8895-4.4 checkout --detach FETCH_HEAD
+          test "$(git -C exynos8895-4.4 rev-parse HEAD)" = "dcdaf6878e7f9497e1d90e25980decfa5d684f74"
+
+      - name: Import clock compile dependency closure
+        run: |
+          cp exynos8895-4.4/drivers/clk/samsung/clk-exynos8895.c drivers/clk/samsung/
+          mkdir -p include/soc/samsung
+          cp exynos8895-4.4/include/soc/samsung/cal-if.h include/soc/samsung/
+          rm -rf drivers/soc/samsung/cal-if
+          cp -a exynos8895-4.4/drivers/soc/samsung/cal-if drivers/soc/samsung/
+          {
+            echo drivers/clk/samsung/clk-exynos8895.c
+            echo include/soc/samsung/cal-if.h
+            find drivers/soc/samsung/cal-if -type f | sort
+          } > phase3-clock-imported-files.txt
+          sha256sum $(cat phase3-clock-imported-files.txt) > phase3-clock-imported-SHA256SUMS.txt
+          printf '\nobj-y += clk-exynos8895.o\n' >> drivers/clk/samsung/Makefile
+
+      - name: Configure Phase-2 base
+        run: |
+          mkdir -p out-phase3-clock
+          ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            scripts/kconfig/merge_config.sh -O out-phase3-clock \
+            arch/arm64/configs/defconfig \
+            arch/arm64/configs/alice_dream2lte_4_19_phase2.config \
+            2>&1 | tee phase3-clock-config.log
+
+      - name: Compile Exynos8895 clock object
+        run: |
+          set +e
+          set -o pipefail
+          make O="$GITHUB_WORKSPACE/out-phase3-clock" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- prepare scripts
+          make O="$GITHUB_WORKSPACE/out-phase3-clock" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j2 \
+            drivers/clk/samsung/clk-exynos8895.o \
+            2>&1 | tee phase3-clock-build.log
+          status=${PIPESTATUS[0]}
+          echo "$status" > phase3-clock-exit-code.txt
+          exit 0
+
+      - name: Collect clock probe evidence
+        if: always()
+        run: |
+          OBJ=out-phase3-clock/drivers/clk/samsung/clk-exynos8895.o
+          if test -s "$OBJ"; then
+            cp "$OBJ" clk-exynos8895-phase3.o
+            sha256sum clk-exynos8895-phase3.o > phase3-clock-object-SHA256SUMS.txt
+          fi
+          {
+            echo 'scope=compile-probe-only'
+            echo 'kernel=4.19.325'
+            echo 'subsystem=Exynos8895 clock provider'
+            echo "compile_exit=$(cat phase3-clock-exit-code.txt)"
+            echo 'physical_boot=not_tested'
+          } > phase3-clock-status.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dream2lte-linux-4.19-phase3-clock-probe
+          path: |
+            clk-exynos8895-phase3.o
+            phase3-clock-config.log
+            phase3-clock-build.log
+            phase3-clock-exit-code.txt
+            phase3-clock-status.txt
+            phase3-clock-object-SHA256SUMS.txt
+            phase3-clock-imported-files.txt
+            phase3-clock-imported-SHA256SUMS.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Enforce clock compile result
+        run: exit "$(cat phase3-clock-exit-code.txt)"
