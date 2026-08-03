@@ -35,6 +35,7 @@ This branch is an isolated, non-bootable bring-up tree. It must not replace the 
 - Final configuration SHA-256: `6d84ad3b93192031df0adb24a0aa9f9d2bbec8cccac2096dd16d1a874a75cb6a`
 - Locked fragment SHA-256: `9ced056a542515e6a8f78fb63a074d62f1fb5f81071f5ca5ef0374f52822b775`
 - GitHub Actions artifact digest: `sha256:ab1b6661ccd7665a803c9f38bc7891e200af5f662dba68182a3276d4c5fa020c`
+- Detailed record: `evidence/PHASE2_ANDROID_HOST_BUILD.md`
 
 The Phase-2 configuration enables Binder devices, ASHMEM, SELinux, cgroups, namespaces, seccomp, ext4/F2FS encryption, dm-verity, generic UFS/MMC, Samsung UART and pstore. KernelSU, SUSFS and overclocking remain disabled.
 
