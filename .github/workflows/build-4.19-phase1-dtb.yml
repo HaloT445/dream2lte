@@ -81,7 +81,7 @@ jobs:
         run: |
           set +e
           set -o pipefail
-          make -C kernel-4.19 O="$GITHUB_WORKSPACE/out-4.19-dtb" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j2 exynos8895-dream2lte_eur_open_10.dtb 2>&1 | tee phase1-dtb-build.log
+          make -C kernel-4.19 O="$GITHUB_WORKSPACE/out-4.19-dtb" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j2 exynos/exynos8895-dream2lte_eur_open_10.dtb 2>&1 | tee phase1-dtb-build.log
           status=${PIPESTATUS[0]}
           echo "$status" > phase1-exit-code.txt
           exit 0
