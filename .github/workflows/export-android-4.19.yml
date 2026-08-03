@@ -1,8 +1,6 @@
 name: Export Android 4.19 base
 
 on:
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
