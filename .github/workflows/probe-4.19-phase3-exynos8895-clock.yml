@@ -38,6 +38,7 @@ jobs:
           cp exynos8895-4.4/drivers/clk/samsung/clk-exynos8895.c drivers/clk/samsung/
           cp exynos8895-4.4/drivers/clk/samsung/composite.c drivers/clk/samsung/
           cp exynos8895-4.4/drivers/clk/samsung/composite.h drivers/clk/samsung/
+          cp exynos8895-4.4/include/linux/exynos-ss.h include/linux/
           mkdir -p include/soc/samsung
           cp exynos8895-4.4/include/soc/samsung/cal-if.h include/soc/samsung/
           rm -rf drivers/soc/samsung/cal-if
@@ -46,6 +47,7 @@ jobs:
             echo drivers/clk/samsung/clk-exynos8895.c
             echo drivers/clk/samsung/composite.c
             echo drivers/clk/samsung/composite.h
+            echo include/linux/exynos-ss.h
             echo include/soc/samsung/cal-if.h
             find drivers/soc/samsung/cal-if -type f | sort
           } > phase3-clock-imported-files.txt
@@ -94,6 +96,7 @@ jobs:
             echo 'kernel=4.19.325'
             echo 'subsystem=Exynos8895 clock provider and Samsung composite layer'
             echo 'compile_path=linux-cal'
+            echo 'exynos_snapshot=disabled-noop-interface-only'
             echo "compile_exit=$(cat phase3-clock-exit-code.txt)"
             echo 'physical_boot=not_tested'
           } > phase3-clock-status.txt
