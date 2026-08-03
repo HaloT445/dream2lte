@@ -1,0 +1,122 @@
+name: Build Android 4.19 phase 2 dream2lte
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  phase2-android:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+    steps:
+      - name: Checkout materialized Linux 4.19 source
+        uses: actions/checkout@v4
+        with:
+          ref: port/linux-4.19-source
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential flex gcc-aarch64-linux-gnu libelf-dev libssl-dev python3 rsync
+
+      - name: Merge Phase-2 Android configuration
+        run: |
+          set -o pipefail
+          mkdir -p out-phase2
+          cp arch/arm64/configs/defconfig phase2-generic-base.config
+          ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            scripts/kconfig/merge_config.sh -O out-phase2 \
+            arch/arm64/configs/defconfig \
+            arch/arm64/configs/alice_dream2lte_4_19_phase2.config \
+            2>&1 | tee phase2-config-merge.log
+          cp out-phase2/.config phase2-final.config
+          scripts/diffconfig phase2-generic-base.config phase2-final.config > phase2-config-diff.txt || true
+
+      - name: Enforce requested configuration
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          fragment = Path('arch/arm64/configs/alice_dream2lte_4_19_phase2.config')
+          final = Path('phase2-final.config')
+          requested = {}
+          for raw in fragment.read_text().splitlines():
+              line = raw.strip()
+              if line.startswith('CONFIG_') and '=' in line:
+                  key, value = line.split('=', 1)
+                  requested[key] = value
+              elif line.startswith('# CONFIG_') and line.endswith(' is not set'):
+                  requested[line.split()[1]] = 'n'
+          actual = {}
+          for raw in final.read_text().splitlines():
+              line = raw.strip()
+              if line.startswith('CONFIG_') and '=' in line:
+                  key, value = line.split('=', 1)
+                  actual[key] = value
+              elif line.startswith('# CONFIG_') and line.endswith(' is not set'):
+                  actual[line.split()[1]] = 'n'
+          bad = []
+          for key, expected in requested.items():
+              got = actual.get(key, '<missing>')
+              if got != expected:
+                  bad.append((key, expected, got))
+          if bad:
+              for key, expected, got in bad:
+                  print(f'MISMATCH {key}: expected {expected}, got {got}')
+              raise SystemExit(1)
+          print(f'Phase-2 configuration attestation PASS: {len(requested)} requested symbols matched')
+          PY
+          grep -E '^(CONFIG_(LOCALVERSION|ARCH_EXYNOS|ANDROID|ANDROID_BINDER_IPC|ANDROID_BINDER_DEVICES|ASHMEM|SECURITY_SELINUX|EXT4_FS|F2FS_FS|DM_VERITY|SCSI_UFSHCD|SCSI_UFSHCD_PLATFORM|SERIAL_SAMSUNG|PSTORE|PSTORE_RAM)=)' phase2-final.config > phase2-config-attestation.txt
+
+      - name: Build Phase-2 Image and dream2lte DTB
+        run: |
+          set -o pipefail
+          make O="$GITHUB_WORKSPACE/out-phase2" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j2 \
+            Image exynos/exynos8895-dream2lte_eur_open_10.dtb \
+            2>&1 | tee phase2-build.log
+
+      - name: Verify and package evidence
+        run: |
+          IMAGE=out-phase2/arch/arm64/boot/Image
+          DTB=out-phase2/arch/arm64/boot/dts/exynos/exynos8895-dream2lte_eur_open_10.dtb
+          test -s "$IMAGE"
+          test -s "$DTB"
+          cp "$IMAGE" Image-dream2lte-4.19-phase2
+          cp "$DTB" exynos8895-dream2lte_eur_open_10-phase2.dtb
+          file Image-dream2lte-4.19-phase2 exynos8895-dream2lte_eur_open_10-phase2.dtb | tee phase2-file-identification.txt
+          sha256sum \
+            Image-dream2lte-4.19-phase2 \
+            exynos8895-dream2lte_eur_open_10-phase2.dtb \
+            phase2-final.config \
+            arch/arm64/configs/alice_dream2lte_4_19_phase2.config \
+            > phase2-SHA256SUMS.txt
+          {
+            echo 'status=host-build-pass-not-device-bootable'
+            echo 'kernel=4.19.325'
+            echo 'target=dream2lte Exynos8895'
+            echo 'kernelsu=disabled'
+            echo 'susfs=disabled'
+            echo 'overclock=disabled'
+            echo 'physical_boot=not_tested'
+          } > phase2-status.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dream2lte-linux-4.19-phase2-android
+          path: |
+            Image-dream2lte-4.19-phase2
+            exynos8895-dream2lte_eur_open_10-phase2.dtb
+            phase2-final.config
+            phase2-generic-base.config
+            phase2-config-merge.log
+            phase2-config-diff.txt
+            phase2-config-attestation.txt
+            phase2-build.log
+            phase2-file-identification.txt
+            phase2-SHA256SUMS.txt
+            phase2-status.txt
+          retention-days: 7
