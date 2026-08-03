@@ -1,8 +1,6 @@
 name: Build Android 4.19 phase 0
 
 on:
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
