@@ -1,0 +1,104 @@
+name: Materialize dream2lte Linux 4.19 source
+
+on:
+  push:
+    branches:
+      - port/linux-4.19-bringup
+    paths:
+      - .github/workflows/materialize-4.19-source.yml
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: Fetch pinned Android 4.19 source
+        run: |
+          mkdir source-4.19
+          git -C source-4.19 init
+          git -C source-4.19 remote add android https://android.googlesource.com/kernel/common
+          git -C source-4.19 fetch --depth=1 android a8bf86a0e0fa05070897a210d706d5c4d83c26ac
+          git -C source-4.19 checkout --detach FETCH_HEAD
+          test "$(git -C source-4.19 rev-parse HEAD)" = "a8bf86a0e0fa05070897a210d706d5c4d83c26ac"
+      - name: Fetch pinned Exynos8895 source
+        run: |
+          mkdir exynos8895-4.4
+          git -C exynos8895-4.4 init
+          git -C exynos8895-4.4 remote add origin https://github.com/boloaimer/exynos-8895.git
+          git -C exynos8895-4.4 fetch --depth=1 origin dcdaf6878e7f9497e1d90e25980decfa5d684f74
+          git -C exynos8895-4.4 checkout --detach FETCH_HEAD
+          test "$(git -C exynos8895-4.4 rev-parse HEAD)" = "dcdaf6878e7f9497e1d90e25980decfa5d684f74"
+      - name: Overlay exact dream2lte DTS dependency closure
+        run: |
+          cat > dream2lte-dts-files.txt <<'EOF'
+          arch/arm64/boot/dts/exynos/battery_data_dream2lte_common.dtsi
+          arch/arm64/boot/dts/exynos/battery_data_dream2lte_eur_09.dtsi
+          arch/arm64/boot/dts/exynos/ccic-s2mm005_01.dtsi
+          arch/arm64/boot/dts/exynos/exynos8895-display-lcd.dtsi
+          arch/arm64/boot/dts/exynos/exynos8895-dream2lte_common.dtsi
+          arch/arm64/boot/dts/exynos/exynos8895-dream2lte_eur_open_10.dts
+          arch/arm64/boot/dts/exynos/exynos8895-dream2lte_gpio_10.dtsi
+          arch/arm64/boot/dts/exynos/exynos8895-dream2lte_motor.dtsi
+          arch/arm64/boot/dts/exynos/exynos8895-dream2lte_svcled.dtsi
+          arch/arm64/boot/dts/exynos/exynos8895-dreamlte_fingerprint-sensor_10.dtsi
+          arch/arm64/boot/dts/exynos/exynos8895-dreamlte_mst_00.dtsi
+          arch/arm64/boot/dts/exynos/exynos8895-ess.dtsi
+          arch/arm64/boot/dts/exynos/exynos8895-pinctrl.dtsi
+          arch/arm64/boot/dts/exynos/exynos8895-pm-domains.dtsi
+          arch/arm64/boot/dts/exynos/exynos8895-rmem.dtsi
+          arch/arm64/boot/dts/exynos/exynos8895-tmu-sensor-conf.dtsi
+          arch/arm64/boot/dts/exynos/exynos8895.dtsi
+          arch/arm64/boot/dts/exynos/exynos_gpio_config_macros.dtsi
+          arch/arm64/boot/dts/exynos/modem-ss355ap-pdata.dtsi
+          include/dt-bindings/clock/exynos8895.h
+          include/dt-bindings/power/exynos-power.h
+          include/dt-bindings/soc/samsung/exynos8895.h
+          include/dt-bindings/sysmmu/sysmmu.h
+          include/dt-bindings/thermal/thermal.h
+          include/dt-bindings/thermal/thermal_exynos.h
+          include/dt-bindings/ufs/ufs.h
+          EOF
+          while IFS= read -r path; do
+            mkdir -p "source-4.19/$(dirname "$path")"
+            cp -a "exynos8895-4.4/$path" "source-4.19/$path"
+          done < dream2lte-dts-files.txt
+          (cd exynos8895-4.4 && xargs sha256sum < ../dream2lte-dts-files.txt) > source-SHA256SUMS.txt
+          (cd source-4.19 && xargs sha256sum < ../dream2lte-dts-files.txt) > imported-SHA256SUMS.txt
+          diff -u source-SHA256SUMS.txt imported-SHA256SUMS.txt
+          printf '\ndtb-$(CONFIG_ARCH_EXYNOS) += exynos8895-dream2lte_eur_open_10.dtb\n' >> source-4.19/arch/arm64/boot/dts/exynos/Makefile
+      - name: Add provenance and safety status
+        run: |
+          cp dream2lte-dts-files.txt source-4.19/DREAM2LTE_DTS_FILES.txt
+          cp imported-SHA256SUMS.txt source-4.19/DREAM2LTE_DTS_SHA256SUMS.txt
+          cat > source-4.19/ALICE_PORT_STATUS.md <<'EOF'
+          # dream2lte Linux 4.19.325 bring-up source
+
+          This branch is an isolated, non-bootable bring-up tree. It must not replace the locked Linux 4.4.302 baseline.
+
+          - Android common base: `a8bf86a0e0fa05070897a210d706d5c4d83c26ac`
+          - Exynos8895 DTS source: `dcdaf6878e7f9497e1d90e25980decfa5d684f74`
+          - dream2lte DTS dependency closure: 26 files, SHA-256 verified
+          - DTB host compile: PASS
+          - DTB SHA-256: `f6957179deff928af58f550b59fadc0bd29baf33fa1201e32041c03e3c7ec98e`
+
+          Not validated: physical boot, UART/pstore, storage, display, input, modem, Wi-Fi, Bluetooth, audio, camera, GPU, TEE, Keymaster, banking apps, charging, thermal or stress testing. KernelSU/SUSFS and OC are intentionally excluded from initial bring-up.
+          EOF
+      - name: Create complete source commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rm -rf source-4.19/.git
+          git -C source-4.19 init
+          git -C source-4.19 config user.name 'github-actions[bot]'
+          git -C source-4.19 config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C source-4.19 config core.symlinks true
+          git -C source-4.19 add -A
+          git -C source-4.19 commit -m 'port: materialize Linux 4.19.325 dream2lte bring-up source'
+          git -C source-4.19 branch -M port/linux-4.19-source
+          git -C source-4.19 remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C source-4.19 push --force origin HEAD:refs/heads/port/linux-4.19-source
+      - name: Record source commit
+        run: git -C source-4.19 rev-parse HEAD
