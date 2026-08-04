@@ -1,11 +1,11 @@
 name: Materialize verified Linux 4.19 phase 4 platform ports
 
 on:
-  push:
-    branches:
-      - port/linux-4.19-bringup
+  pull_request:
+    branches: [main]
     paths:
       - .github/workflows/materialize-4.19-phase4-platform.yml
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -22,25 +22,28 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Fetch pinned Exynos8895 source
+      - name: Fetch pinned Exynos8895 source outside worktree
         run: |
-          mkdir exynos8895-4.4
-          git -C exynos8895-4.4 init
-          git -C exynos8895-4.4 remote add origin https://github.com/boloaimer/exynos-8895.git
-          git -C exynos8895-4.4 fetch --depth=1 origin dcdaf6878e7f9497e1d90e25980decfa5d684f74
-          git -C exynos8895-4.4 checkout --detach FETCH_HEAD
-          test "$(git -C exynos8895-4.4 rev-parse HEAD)" = "dcdaf6878e7f9497e1d90e25980decfa5d684f74"
+          VENDOR="$RUNNER_TEMP/exynos8895-4.4"
+          mkdir -p "$VENDOR"
+          git -C "$VENDOR" init
+          git -C "$VENDOR" remote add origin https://github.com/boloaimer/exynos-8895.git
+          git -C "$VENDOR" fetch --depth=1 origin dcdaf6878e7f9497e1d90e25980decfa5d684f74
+          git -C "$VENDOR" checkout --detach FETCH_HEAD
+          test "$(git -C "$VENDOR" rev-parse HEAD)" = \
+            "dcdaf6878e7f9497e1d90e25980decfa5d684f74"
 
       - name: Apply deterministic verified ports
         run: |
           set -euo pipefail
+          VENDOR="$RUNNER_TEMP/exynos8895-4.4"
           bash scripts/port/apply_exynos8895_clock_cal.sh \
-            exynos8895-4.4 exynos8895-clock-cal-import.SHA256SUMS
+            "$VENDOR" exynos8895-clock-cal-import.SHA256SUMS
           python3 scripts/port/apply_exynos8895_clock_build_flags.py
           python3 scripts/port/audit_exynos8895_clock_namespace.py \
             | tee exynos8895-clock-namespace-audit.txt
           python3 scripts/port/apply_exynos8895_pinctrl.py \
-            exynos8895-4.4 exynos8895-pinctrl-import.SHA256SUMS
+            "$VENDOR" exynos8895-pinctrl-import.SHA256SUMS
 
       - name: Enforce materialization scope
         run: |
