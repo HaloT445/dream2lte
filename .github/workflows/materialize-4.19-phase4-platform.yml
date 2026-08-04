@@ -1,0 +1,111 @@
+name: Materialize verified Linux 4.19 phase 4 platform ports
+
+on:
+  push:
+    branches:
+      - port/linux-4.19-bringup
+    paths:
+      - .github/workflows/materialize-4.19-phase4-platform.yml
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout Linux 4.19 source branch
+        uses: actions/checkout@v4
+        with:
+          ref: port/linux-4.19-source
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Fetch pinned Exynos8895 source
+        run: |
+          mkdir exynos8895-4.4
+          git -C exynos8895-4.4 init
+          git -C exynos8895-4.4 remote add origin https://github.com/boloaimer/exynos-8895.git
+          git -C exynos8895-4.4 fetch --depth=1 origin dcdaf6878e7f9497e1d90e25980decfa5d684f74
+          git -C exynos8895-4.4 checkout --detach FETCH_HEAD
+          test "$(git -C exynos8895-4.4 rev-parse HEAD)" = "dcdaf6878e7f9497e1d90e25980decfa5d684f74"
+
+      - name: Apply deterministic verified ports
+        run: |
+          set -euo pipefail
+          bash scripts/port/apply_exynos8895_clock_cal.sh \
+            exynos8895-4.4 exynos8895-clock-cal-import.SHA256SUMS
+          python3 scripts/port/apply_exynos8895_clock_build_flags.py
+          python3 scripts/port/audit_exynos8895_clock_namespace.py \
+            | tee exynos8895-clock-namespace-audit.txt
+          python3 scripts/port/apply_exynos8895_pinctrl.py \
+            exynos8895-4.4 exynos8895-pinctrl-import.SHA256SUMS
+
+      - name: Enforce materialization scope
+        run: |
+          set -euo pipefail
+          git status --short | tee phase4-materialize-status.txt
+          test -s phase4-materialize-status.txt
+
+          while IFS= read -r line; do
+            path=${line:3}
+            case "$path" in
+              drivers/clk/samsung/clk-exynos8895.c|\
+              drivers/clk/samsung/composite.c|\
+              drivers/clk/samsung/composite.h|\
+              drivers/clk/samsung/Makefile|\
+              drivers/soc/samsung/Makefile|\
+              drivers/soc/samsung/exynos8895-pmu-compat.c|\
+              drivers/soc/samsung/cal-if/*|\
+              include/linux/exynos-ss.h|\
+              include/soc/samsung/cal-if.h|\
+              include/soc/samsung/ect_parser.h|\
+              include/soc/samsung/exynos-pmu.h|\
+              drivers/pinctrl/samsung/pinctrl-exynos8895.c|\
+              drivers/pinctrl/samsung/pinctrl-samsung.c|\
+              drivers/pinctrl/samsung/pinctrl-samsung.h|\
+              drivers/pinctrl/samsung/Makefile|\
+              exynos8895-clock-cal-import.SHA256SUMS|\
+              exynos8895-clock-cal-import.files|\
+              exynos8895-clock-namespace-audit.txt|\
+              exynos8895-pinctrl-import.SHA256SUMS|\
+              exynos8895-pinctrl-import.files|\
+              phase4-materialize-status.txt)
+                ;;
+              *)
+                echo "Unexpected materialized path: $path" >&2
+                exit 1
+                ;;
+            esac
+          done < phase4-materialize-status.txt
+
+      - name: Commit verified platform closure
+        run: |
+          set -euo pipefail
+          git config user.name "ALice CI"
+          git config user.email "halot4004@gmail.com"
+          git add \
+            drivers/clk/samsung/clk-exynos8895.c \
+            drivers/clk/samsung/composite.c \
+            drivers/clk/samsung/composite.h \
+            drivers/clk/samsung/Makefile \
+            drivers/soc/samsung/Makefile \
+            drivers/soc/samsung/exynos8895-pmu-compat.c \
+            drivers/soc/samsung/cal-if \
+            include/linux/exynos-ss.h \
+            include/soc/samsung/cal-if.h \
+            include/soc/samsung/ect_parser.h \
+            include/soc/samsung/exynos-pmu.h \
+            drivers/pinctrl/samsung/pinctrl-exynos8895.c \
+            drivers/pinctrl/samsung/pinctrl-samsung.c \
+            drivers/pinctrl/samsung/pinctrl-samsung.h \
+            drivers/pinctrl/samsung/Makefile \
+            exynos8895-clock-cal-import.SHA256SUMS \
+            exynos8895-clock-cal-import.files \
+            exynos8895-clock-namespace-audit.txt \
+            exynos8895-pinctrl-import.SHA256SUMS \
+            exynos8895-pinctrl-import.files
+          git diff --cached --check
+          git commit -m "port: materialize verified Exynos8895 clock and pinctrl"
+          git push origin HEAD:port/linux-4.19-source
