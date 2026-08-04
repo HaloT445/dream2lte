@@ -1,0 +1,139 @@
+name: Build Android 4.19 phase 5 platform link
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  phase5-platform-link:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout materialized Linux 4.19 source
+        uses: actions/checkout@v4
+        with:
+          ref: port/linux-4.19-source
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential flex gcc-aarch64-linux-gnu libelf-dev libssl-dev python3 rsync
+
+      - name: Fetch pinned Exynos8895 4.4 source
+        run: |
+          mkdir exynos8895-4.4
+          git -C exynos8895-4.4 init
+          git -C exynos8895-4.4 remote add origin https://github.com/boloaimer/exynos-8895.git
+          git -C exynos8895-4.4 fetch --depth=1 origin dcdaf6878e7f9497e1d90e25980decfa5d684f74
+          git -C exynos8895-4.4 checkout --detach FETCH_HEAD
+          test "$(git -C exynos8895-4.4 rev-parse HEAD)" = "dcdaf6878e7f9497e1d90e25980decfa5d684f74"
+
+      - name: Apply verified platform ports
+        run: |
+          set -o pipefail
+          bash scripts/port/apply_exynos8895_clock_cal.sh \
+            exynos8895-4.4 phase5-clock-cal-import-SHA256SUMS.txt
+          python3 scripts/port/apply_exynos8895_clock_build_flags.py
+          python3 scripts/port/audit_exynos8895_clock_namespace.py \
+            | tee phase5-clock-namespace-audit.txt
+          python3 scripts/port/apply_exynos8895_pinctrl.py \
+            exynos8895-4.4 phase5-pinctrl-import-SHA256SUMS.txt
+          python3 scripts/port/apply_exynos8895_pd_safe.py
+          sha256sum drivers/soc/samsung/exynos8895-pd-safe.c \
+            > phase5-pd-import-SHA256SUMS.txt
+          grep -F 'GENPD_FLAG_ALWAYS_ON' drivers/soc/samsung/exynos8895-pd-safe.c
+          grep -F 'samsung,exynos8895-pinctrl' drivers/pinctrl/samsung/pinctrl-samsung.c
+
+      - name: Merge platform configuration
+        run: |
+          set -o pipefail
+          cat > phase5-platform.config <<'EOF'
+          CONFIG_PINCTRL=y
+          CONFIG_PINCTRL_SAMSUNG=y
+          CONFIG_PINCTRL_EXYNOS=y
+          CONFIG_PINCTRL_EXYNOS_ARM64=y
+          CONFIG_PM=y
+          CONFIG_PM_GENERIC_DOMAINS=y
+          CONFIG_PM_GENERIC_DOMAINS_OF=y
+          EOF
+          mkdir -p out-phase5-platform
+          ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            scripts/kconfig/merge_config.sh -O out-phase5-platform \
+            arch/arm64/configs/defconfig \
+            arch/arm64/configs/alice_dream2lte_4_19_phase2.config \
+            phase5-platform.config \
+            2>&1 | tee phase5-platform-config.log
+          cp out-phase5-platform/.config phase5-platform-final.config
+          for sym in PINCTRL PINCTRL_SAMSUNG PINCTRL_EXYNOS \
+                     PINCTRL_EXYNOS_ARM64 PM PM_GENERIC_DOMAINS \
+                     PM_GENERIC_DOMAINS_OF; do
+            grep -qx "CONFIG_${sym}=y" phase5-platform-final.config
+          done
+
+      - name: Build Phase-5 Image and dream2lte DTB
+        run: |
+          set +e
+          set -o pipefail
+          make O="$GITHUB_WORKSPACE/out-phase5-platform" \
+            ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j2 \
+            Image exynos/exynos8895-dream2lte_eur_open_10.dtb \
+            2>&1 | tee phase5-platform-build.log
+          status=${PIPESTATUS[0]}
+          echo "$status" > phase5-platform-exit-code.txt
+          exit 0
+
+      - name: Collect Phase-5 evidence
+        if: always()
+        run: |
+          IMAGE=out-phase5-platform/arch/arm64/boot/Image
+          DTB=out-phase5-platform/arch/arm64/boot/dts/exynos/exynos8895-dream2lte_eur_open_10.dtb
+          if test -s "$IMAGE"; then cp "$IMAGE" Image-dream2lte-4.19-phase5-platform; fi
+          if test -s "$DTB"; then cp "$DTB" exynos8895-dream2lte_eur_open_10-phase5-platform.dtb; fi
+          : > phase5-platform-SHA256SUMS.txt
+          for f in Image-dream2lte-4.19-phase5-platform \
+                   exynos8895-dream2lte_eur_open_10-phase5-platform.dtb \
+                   phase5-platform-final.config; do
+            if test -s "$f"; then sha256sum "$f" >> phase5-platform-SHA256SUMS.txt; fi
+          done
+          if test -s Image-dream2lte-4.19-phase5-platform; then
+            file Image-dream2lte-4.19-phase5-platform \
+              | tee phase5-platform-file-identification.txt
+          fi
+          {
+            echo 'scope=host-link-gate-only'
+            echo 'kernel=4.19.325'
+            echo 'subsystems=clock CAL PMUCAL pinctrl BOOT_SAFE-genpd'
+            echo 'power_domains=always-on-runtime-off-blocked'
+            echo 'ufs=generic-only-not-device-validated'
+            echo "build_exit=$(cat phase5-platform-exit-code.txt)"
+            echo 'physical_boot=not_tested'
+          } > phase5-platform-status.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dream2lte-linux-4.19-phase5-platform-link
+          path: |
+            Image-dream2lte-4.19-phase5-platform
+            exynos8895-dream2lte_eur_open_10-phase5-platform.dtb
+            phase5-platform.config
+            phase5-platform-final.config
+            phase5-platform-config.log
+            phase5-platform-build.log
+            phase5-platform-exit-code.txt
+            phase5-platform-status.txt
+            phase5-platform-file-identification.txt
+            phase5-platform-SHA256SUMS.txt
+            phase5-clock-cal-import-SHA256SUMS.txt
+            phase5-pinctrl-import-SHA256SUMS.txt
+            phase5-pd-import-SHA256SUMS.txt
+            phase5-clock-namespace-audit.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Enforce Phase-5 platform link result
+        run: exit "$(cat phase5-platform-exit-code.txt)"
