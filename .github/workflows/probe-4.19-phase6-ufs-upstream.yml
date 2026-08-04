@@ -1,14 +1,17 @@
-name: Probe Android 4.19 phase 6 upstream Exynos UFS
+name: Probe Android 4.19 phase 6 upstream Exynos UFS v2
 
 on:
   pull_request:
     branches: [main]
+    paths:
+      - .github/workflows/probe-4.19-phase6-ufs-upstream.yml
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  ufs-upstream-probe:
+  ufs-upstream-probe-v2:
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     steps:
@@ -33,40 +36,16 @@ jobs:
           test "$(git -C linux-v5.15 rev-parse HEAD)" = \
             "8bb7eca972ad531c9b149c0a51ab43a417385813"
 
-      - name: Import isolated upstream Exynos UFS closure
+      - name: Apply deterministic Linux 4.19 UFS backport
         run: |
-          cp linux-v5.15/drivers/scsi/ufs/ufs-exynos.c drivers/scsi/ufs/
-          cp linux-v5.15/drivers/scsi/ufs/ufs-exynos.h drivers/scsi/ufs/
-          cp linux-v5.15/drivers/phy/samsung/phy-samsung-ufs.c drivers/phy/samsung/
-          cp linux-v5.15/drivers/phy/samsung/phy-samsung-ufs.h drivers/phy/samsung/
-          cp linux-v5.15/drivers/phy/samsung/phy-exynos7-ufs.c drivers/phy/samsung/
-
-          python3 - <<'PY'
-          from pathlib import Path
-
-          phy = Path('drivers/phy/samsung/phy-samsung-ufs.c')
-          text = phy.read_text()
-          text = text.replace(
-              'static int samsung_ufs_phy_set_mode(struct phy *generic_phy,\n'
-              '\t\t\t\t    enum phy_mode mode, int submode)',
-              'static int samsung_ufs_phy_set_mode(struct phy *generic_phy,\n'
-              '\t\t\t\t    enum phy_mode mode)')
-          phy.write_text(text)
-
-          host = Path('drivers/scsi/ufs/ufs-exynos.c')
-          text = host.read_text()
-          text = text.replace(
-              '{ .compatible = "samsung,exynos7-ufs",',
-              '{ .compatible = "samsung,exynos8895-ufs",')
-          host.write_text(text)
-          PY
-
-          sha256sum \
-            drivers/scsi/ufs/ufs-exynos.c \
-            drivers/scsi/ufs/ufs-exynos.h \
-            drivers/phy/samsung/phy-samsung-ufs.c \
-            drivers/phy/samsung/phy-samsung-ufs.h \
-            drivers/phy/samsung/phy-exynos7-ufs.c \
+          set -euo pipefail
+          python3 scripts/port/apply_exynos8895_ufs_upstream.py linux-v5.15
+          grep -F 'samsung,exynos8895-ufs' drivers/scsi/ufs/ufs-exynos.c
+          grep -F 'BOOT_SAFE negotiation' drivers/scsi/ufs/ufs-exynos.c
+          grep -F 'ufshcd_pltfrm_suspend' drivers/scsi/ufs/ufs-exynos.c
+          grep -F 'RX_HS_G1_SYNC_LENGTH_CAP' \
+            drivers/scsi/ufs/ufs-exynos-4.19-compat.h
+          sha256sum $(cat exynos8895-ufs-upstream-import.files) \
             > phase6-ufs-import-SHA256SUMS.txt
 
       - name: Configure UFS and generic PHY
@@ -122,6 +101,8 @@ jobs:
             echo 'source_host_phy=upstream-linux-v5.15'
             echo 'upstream_commit=8bb7eca972ad531c9b149c0a51ab43a417385813'
             echo 'compatible=samsung,exynos8895-ufs'
+            echo 'boot_safe_link_cap=gear2-two-lanes'
+            echo 'linux_4_19_ufshcd_core=preserved'
             echo 'vendor_4_4_ufshcd_core_copied=no'
             echo "compile_exit=$(cat phase6-ufs-exit-code.txt)"
             echo 'physical_storage=not_tested'
@@ -130,7 +111,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: dream2lte-linux-4.19-phase6-ufs-upstream-probe
+          name: dream2lte-linux-4.19-phase6-ufs-upstream-probe-v2
           path: |
             phase6-ufs.config
             phase6-ufs-final.config
@@ -140,6 +121,7 @@ jobs:
             phase6-ufs-status.txt
             phase6-ufs-import-SHA256SUMS.txt
             phase6-ufs-object-SHA256SUMS.txt
+            exynos8895-ufs-upstream-import.files
           if-no-files-found: warn
           retention-days: 7
 
