@@ -1,0 +1,170 @@
+name: Diagnose Android Common 5.15 baseline build
+
+on:
+  push:
+    branches:
+      - port/linux-5.15-bringup
+    paths:
+      - .github/workflows/diagnose-5.15-phase0-build.yml
+  workflow_dispatch:
+
+concurrency:
+  group: diagnose-5.15-phase0-build
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose-phase0:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    env:
+      COMMON_URL: https://android.googlesource.com/kernel/common
+      COMMON_REF: refs/heads/android14-5.15
+      COMMON_SHA: b10e5e5b5c5e01d49829aec34b65a0d717d6f2f5
+      COMMON_TREE: 7c3cd26c765b741df608a8b81cc6b93f1240fa36
+      EVIDENCE_DIR: evidence/diagnostics/phase0-5.15
+
+    steps:
+      - name: Checkout bring-up branch
+        uses: actions/checkout@v4
+        with:
+          ref: port/linux-5.15-bringup
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential clang dwarves flex git libelf-dev \
+            libssl-dev lld llvm python3 rsync
+
+      - name: Fetch exact Android Common source
+        run: |
+          set -euo pipefail
+          COMMON="$RUNNER_TEMP/android-common-5.15"
+          git init "$COMMON"
+          git -C "$COMMON" remote add origin "$COMMON_URL"
+          git -C "$COMMON" fetch --depth=1 origin "$COMMON_REF"
+          git -C "$COMMON" checkout --detach FETCH_HEAD
+          test "$(git -C "$COMMON" rev-parse HEAD)" = "$COMMON_SHA"
+          test "$(git -C "$COMMON" rev-parse HEAD^{tree})" = "$COMMON_TREE"
+          test "$(sed -n 's/^VERSION = //p' "$COMMON/Makefile")" = 5
+          test "$(sed -n 's/^PATCHLEVEL = //p' "$COMMON/Makefile")" = 15
+
+      - name: Configure and capture full build log
+        run: |
+          set -u
+          COMMON="$RUNNER_TEMP/android-common-5.15"
+          OUT="$RUNNER_TEMP/out-5.15-diagnostic"
+          mkdir -p "$EVIDENCE_DIR"
+
+          {
+            echo "source_url=$COMMON_URL"
+            echo "source_ref=$COMMON_REF"
+            echo "source_commit=$COMMON_SHA"
+            echo "source_tree=$COMMON_TREE"
+            echo "runner=$(uname -a)"
+            echo "clang=$(clang --version | head -n1)"
+            echo "ld_lld=$(ld.lld --version | head -n1)"
+            echo "llvm_ar=$(llvm-ar --version | head -n1)"
+            echo "make=$(make --version | head -n1)"
+            echo "python=$(python3 --version)"
+          } > "$EVIDENCE_DIR/environment.txt"
+
+          set +e
+          set -o pipefail
+          make -C "$COMMON" O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            gki_defconfig 2>&1 | tee "$EVIDENCE_DIR/configure.log"
+          config_status=${PIPESTATUS[0]}
+
+          if [ "$config_status" -eq 0 ]; then
+            cp "$OUT/.config" "$EVIDENCE_DIR/gki-final.config"
+            make -C "$COMMON" O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+              -j2 V=1 Image 2>&1 | tee "$EVIDENCE_DIR/build.log"
+            build_status=${PIPESTATUS[0]}
+          else
+            build_status=125
+            : > "$EVIDENCE_DIR/build.log"
+          fi
+          set -e
+
+          printf '%s\n' "$config_status" > "$EVIDENCE_DIR/configure-exit-code.txt"
+          printf '%s\n' "$build_status" > "$EVIDENCE_DIR/build-exit-code.txt"
+
+          python3 - "$EVIDENCE_DIR/build.log" "$EVIDENCE_DIR/first-errors.txt" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          source = Path(sys.argv[1])
+          output = Path(sys.argv[2])
+          lines = source.read_text(errors="replace").splitlines()
+          pattern = re.compile(
+              r"(?:^|\s)(?:error:|fatal error:|FAILED:|undefined reference|"
+              r"No rule to make target|not found|cannot find|Killed)(?:\s|$)",
+              re.IGNORECASE,
+          )
+          hits = [index for index, line in enumerate(lines) if pattern.search(line)]
+          selected: list[str] = []
+          seen: set[int] = set()
+          for index in hits[:40]:
+              for current in range(max(0, index - 4), min(len(lines), index + 8)):
+                  if current not in seen:
+                      selected.append(f"{current + 1}: {lines[current]}")
+                      seen.add(current)
+          if not selected:
+              selected = [f"{i + 1}: {line}" for i, line in enumerate(lines[-300:], max(0, len(lines) - 300))]
+          output.write_text("\n".join(selected) + "\n")
+          PY
+
+          tail -n 400 "$EVIDENCE_DIR/build.log" > "$EVIDENCE_DIR/build-tail.txt" || true
+
+          IMAGE="$OUT/arch/arm64/boot/Image"
+          {
+            echo "migration=direct-4.4.302-to-5.15"
+            echo "linux_4_19_dependency=none"
+            echo "configure_exit=$config_status"
+            echo "build_exit=$build_status"
+            if [ -s "$IMAGE" ]; then
+              echo "image_present=yes"
+              stat -c 'image_bytes=%s' "$IMAGE"
+              sha256sum "$IMAGE" | sed 's#  .*#  Image#'
+            else
+              echo "image_present=no"
+            fi
+            echo "exynos8895_imported=no"
+            echo "physical_boot=not_tested"
+            echo "one_ui_8=not_tested"
+          } > "$EVIDENCE_DIR/status.txt"
+
+          if [ -s "$EVIDENCE_DIR/gki-final.config" ]; then
+            sha256sum "$EVIDENCE_DIR/gki-final.config" > "$EVIDENCE_DIR/config-SHA256.txt"
+          fi
+
+      - name: Commit compact diagnostics
+        run: |
+          set -euo pipefail
+          rm -f "$EVIDENCE_DIR/build.log"
+          git config user.name "ALice CI"
+          git config user.email "halot4004@gmail.com"
+          git add "$EVIDENCE_DIR"
+          if git diff --cached --quiet; then
+            echo 'No diagnostic changes to commit'
+          else
+            git commit -m "evidence: capture Android Common 5.15 baseline build"
+            git push origin HEAD:port/linux-5.15-bringup
+          fi
+
+      - name: Upload complete diagnostic logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dream2lte-linux-5.15-phase0-diagnostics
+          path: evidence/diagnostics/phase0-5.15/
+          if-no-files-found: error
+          retention-days: 14
