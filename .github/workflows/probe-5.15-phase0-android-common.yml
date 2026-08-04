@@ -6,6 +6,12 @@ on:
       - port/linux-5.15-bringup
     paths:
       - .github/workflows/probe-5.15-phase0-android-common.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/probe-5.15-phase0-android-common.yml
+      - MIGRATION_5_15.md
   workflow_dispatch:
 
 permissions:
