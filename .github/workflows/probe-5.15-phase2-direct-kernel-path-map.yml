@@ -1,0 +1,70 @@
+name: Probe Linux 5.15 phase 2 direct kernel path map
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/probe-5.15-phase2-direct-kernel-path-map.yml'
+      - 'scripts/port5/map_direct_kernel_paths.py'
+      - 'KERNEL_PATH_MAP_5_15.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  direct-path-map:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      COMMON_URL: https://android.googlesource.com/kernel/common
+      COMMON_REF: refs/heads/android14-5.15
+      COMMON_SHA: b10e5e5b5c5e01d49829aec34b65a0d717d6f2f5
+      DONOR_URL: https://github.com/boloaimer/exynos-8895.git
+      DONOR_SHA: dcdaf6878e7f9497e1d90e25980decfa5d684f74
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: port/linux-5.15-bringup
+          fetch-depth: 1
+
+      - name: Fetch exact destination and donor trees
+        run: |
+          set -euo pipefail
+          DEST="$RUNNER_TEMP/android-common-5.15"
+          DONOR="$RUNNER_TEMP/exynos8895-linux-4.4.302"
+
+          git init "$DEST"
+          git -C "$DEST" remote add origin "$COMMON_URL"
+          git -C "$DEST" fetch --depth=1 origin "$COMMON_REF"
+          git -C "$DEST" checkout --detach FETCH_HEAD
+          test "$(git -C "$DEST" rev-parse HEAD)" = "$COMMON_SHA"
+
+          git init "$DONOR"
+          git -C "$DONOR" remote add origin "$DONOR_URL"
+          git -C "$DONOR" fetch --depth=1 origin "$DONOR_SHA"
+          git -C "$DONOR" checkout --detach FETCH_HEAD
+          test "$(git -C "$DONOR" rev-parse HEAD)" = "$DONOR_SHA"
+
+      - name: Generate strict direct path map
+        run: |
+          set -euo pipefail
+          python3 scripts/port5/map_direct_kernel_paths.py \
+            "$RUNNER_TEMP/android-common-5.15" \
+            "$RUNNER_TEMP/exynos8895-linux-4.4.302" \
+            direct-kernel-path-map
+          grep -qx 'migration=direct-4.4.302-to-5.15' \
+            direct-kernel-path-map/DIRECT_KERNEL_PATH_STATUS.txt
+          grep -qx 'linux_4_19_dependency=none' \
+            direct-kernel-path-map/DIRECT_KERNEL_PATH_STATUS.txt
+          grep -qx 'required_missing=0' \
+            direct-kernel-path-map/DIRECT_KERNEL_PATH_STATUS.txt
+
+      - name: Upload path evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: dream2lte-direct-4.4.302-to-5.15-kernel-path-map
+          path: direct-kernel-path-map/
+          if-no-files-found: error
+          retention-days: 30
