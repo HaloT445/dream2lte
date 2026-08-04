@@ -1,0 +1,39 @@
+name: Assert direct Linux 4.4.302 to 5.15 migration
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/*5.15*.yml'
+      - '.github/workflows/*5.15*.yaml'
+      - 'scripts/port5/**'
+      - 'scripts/port/discover_oneui8_kernel_paths.sh'
+      - 'MIGRATION_5_15.md'
+      - 'KERNEL_PATH_MAP_5_15.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  direct-migration-policy:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: port/linux-5.15-bringup
+          fetch-depth: 1
+
+      - name: Enforce direct migration path
+        run: |
+          set -euo pipefail
+          python3 scripts/port5/assert_direct_4_4_to_5_15.py \
+            | tee direct-migration-policy.txt
+
+      - name: Upload policy evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: dream2lte-direct-4.4.302-to-5.15-policy
+          path: direct-migration-policy.txt
+          if-no-files-found: error
+          retention-days: 30
