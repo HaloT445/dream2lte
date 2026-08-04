@@ -16,7 +16,9 @@ PD_SOURCE = r'''// SPDX-License-Identifier: GPL-2.0
 #include <linux/pm_domain.h>
 #include <linux/slab.h>
 
-#include <soc/samsung/cal-if.h>
+/* Keep this provider independent from CAL private headers. */
+extern int cal_pd_control(unsigned int id, int on);
+extern int cal_pd_status(unsigned int id);
 
 struct alice_exynos8895_pd {
     struct generic_pm_domain genpd;
