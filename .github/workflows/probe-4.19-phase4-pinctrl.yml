@@ -1,0 +1,333 @@
+name: Probe Android 4.19 phase 4 Exynos8895 pinctrl
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pinctrl-probe:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout materialized Linux 4.19 source
+        uses: actions/checkout@v4
+        with:
+          ref: port/linux-4.19-source
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential flex gcc-aarch64-linux-gnu libelf-dev libssl-dev python3 rsync
+
+      - name: Fetch pinned Exynos8895 4.4 source
+        run: |
+          mkdir exynos8895-4.4
+          git -C exynos8895-4.4 init
+          git -C exynos8895-4.4 remote add origin https://github.com/boloaimer/exynos-8895.git
+          git -C exynos8895-4.4 fetch --depth=1 origin dcdaf6878e7f9497e1d90e25980decfa5d684f74
+          git -C exynos8895-4.4 checkout --detach FETCH_HEAD
+          test "$(git -C exynos8895-4.4 rev-parse HEAD)" = "dcdaf6878e7f9497e1d90e25980decfa5d684f74"
+
+      - name: Verify pinned Exynos8895 bank table
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          text = Path('exynos8895-4.4/drivers/pinctrl/samsung/pinctrl-exynos.c').read_text()
+          start = text.index('/* pin banks of exynos8895 pin-controller 0')
+          end = text.index('#ifdef CONFIG_SEC_GPIO_DVS', start)
+          block = text[start:end]
+          found = []
+          for match in re.finditer(
+              r'EXYNOS8_PIN_BANK_EINT([WG])\(bank_type_(alive|off|4),\s*'
+              r'(\d+),\s*(0x[0-9A-Fa-f]+),\s*"([^"]+)",\s*'
+              r'(0x[0-9A-Fa-f]+)\)', block):
+              found.append((match.group(1), match.group(2), int(match.group(3)),
+                            int(match.group(4), 16), match.group(5),
+                            int(match.group(6), 16)))
+
+          expected = [
+              ('W','alive',6,0x000,'etc1',0x20),
+              ('W','alive',8,0x020,'gpa0',0x00),
+              ('W','alive',8,0x040,'gpa1',0x04),
+              ('W','alive',8,0x060,'gpa2',0x08),
+              ('W','alive',8,0x080,'gpa3',0x0c),
+              ('W','alive',7,0x0a0,'gpa4',0x24),
+              ('G','off',8,0x000,'gph0',0x00),
+              ('G','off',7,0x020,'gph1',0x04),
+              ('G','off',4,0x040,'gph3',0x08),
+              ('G','off',3,0x000,'gph2',0x00),
+              ('G','4',3,0x000,'gpi0',0x00),
+              ('G','4',8,0x020,'gpi1',0x04),
+              ('G','off',8,0x000,'gpj1',0x00),
+              ('G','off',7,0x020,'gpj0',0x04),
+              ('G','off',2,0x000,'gpb2',0x00),
+              ('G','off',8,0x000,'gpd0',0x00),
+              ('G','off',8,0x020,'gpd1',0x04),
+              ('G','off',4,0x040,'gpd2',0x08),
+              ('G','off',5,0x060,'gpd3',0x0c),
+              ('G','off',4,0x080,'gpb1',0x10),
+              ('G','off',8,0x0a0,'gpe7',0x14),
+              ('G','off',8,0x0c0,'gpf1',0x18),
+              ('G','off',3,0x000,'gpb0',0x00),
+              ('G','off',5,0x020,'gpc0',0x04),
+              ('G','off',5,0x040,'gpc1',0x08),
+              ('G','off',8,0x060,'gpc2',0x0c),
+              ('G','off',8,0x080,'gpc3',0x10),
+              ('G','off',4,0x0a0,'gpk0',0x14),
+              ('G','off',8,0x0c0,'gpe5',0x18),
+              ('G','off',8,0x0e0,'gpe6',0x1c),
+              ('G','off',8,0x100,'gpe2',0x20),
+              ('G','off',8,0x120,'gpe3',0x24),
+              ('G','off',8,0x140,'gpe4',0x28),
+              ('G','off',4,0x160,'gpf0',0x2c),
+              ('G','off',8,0x180,'gpe1',0x30),
+              ('G','off',2,0x1a0,'gpg0',0x34),
+          ]
+          if found != expected:
+              print('Pinned bank table mismatch')
+              print('found=', found)
+              print('expected=', expected)
+              raise SystemExit(1)
+          print(f'Exynos8895 pin bank table verified: {len(found)} banks')
+          PY
+
+      - name: Add isolated Linux 4.19 pinctrl data port
+        run: |
+          cat > drivers/pinctrl/samsung/pinctrl-exynos8895.c <<'EOF'
+          // SPDX-License-Identifier: GPL-2.0+
+          /* Exynos8895 pin-bank data ported onto the Linux 4.19 Samsung core. */
+          #include "pinctrl-samsung.h"
+          #include "pinctrl-exynos.h"
+
+          static const struct samsung_pin_bank_type bank_type_off = {
+              .fld_width = { 4, 1, 2, 2, 2, 2, },
+              .reg_offset = { 0x00, 0x04, 0x08, 0x0c, 0x10, 0x14, },
+          };
+
+          static const struct samsung_pin_bank_type bank_type_alive = {
+              .fld_width = { 4, 1, 2, 2, },
+              .reg_offset = { 0x00, 0x04, 0x08, 0x0c, },
+          };
+
+          static const struct samsung_pin_bank_type exynos8895_bank_type_fsys0 = {
+              .fld_width = { 4, 1, 2, 3, 2, 2, },
+              .reg_offset = { 0x00, 0x04, 0x08, 0x0c, 0x10, 0x14, },
+          };
+
+          #define EXYNOS8895_PIN_BANK_EINTG_FSYS0(pins, reg, id, offs) \
+              { .type = &exynos8895_bank_type_fsys0, .pctl_offset = reg, \
+                .nr_pins = pins, .eint_type = EINT_TYPE_GPIO, \
+                .eint_offset = offs, .name = id }
+
+          static const struct samsung_pin_bank_data exynos8895_pin_banks0[] __initconst = {
+              EXYNOS_PIN_BANK_EINTW(6, 0x000, "etc1", 0x20),
+              EXYNOS_PIN_BANK_EINTW(8, 0x020, "gpa0", 0x00),
+              EXYNOS_PIN_BANK_EINTW(8, 0x040, "gpa1", 0x04),
+              EXYNOS_PIN_BANK_EINTW(8, 0x060, "gpa2", 0x08),
+              EXYNOS_PIN_BANK_EINTW(8, 0x080, "gpa3", 0x0c),
+              EXYNOS_PIN_BANK_EINTW(7, 0x0a0, "gpa4", 0x24),
+          };
+
+          static const struct samsung_pin_bank_data exynos8895_pin_banks1[] __initconst = {
+              EXYNOS_PIN_BANK_EINTG(8, 0x000, "gph0", 0x00),
+              EXYNOS_PIN_BANK_EINTG(7, 0x020, "gph1", 0x04),
+              EXYNOS_PIN_BANK_EINTG(4, 0x040, "gph3", 0x08),
+          };
+
+          static const struct samsung_pin_bank_data exynos8895_pin_banks2[] __initconst = {
+              EXYNOS_PIN_BANK_EINTG(3, 0x000, "gph2", 0x00),
+          };
+
+          static const struct samsung_pin_bank_data exynos8895_pin_banks3[] __initconst = {
+              EXYNOS8895_PIN_BANK_EINTG_FSYS0(3, 0x000, "gpi0", 0x00),
+              EXYNOS8895_PIN_BANK_EINTG_FSYS0(8, 0x020, "gpi1", 0x04),
+          };
+
+          static const struct samsung_pin_bank_data exynos8895_pin_banks4[] __initconst = {
+              EXYNOS_PIN_BANK_EINTG(8, 0x000, "gpj1", 0x00),
+              EXYNOS_PIN_BANK_EINTG(7, 0x020, "gpj0", 0x04),
+          };
+
+          static const struct samsung_pin_bank_data exynos8895_pin_banks5[] __initconst = {
+              EXYNOS_PIN_BANK_EINTG(2, 0x000, "gpb2", 0x00),
+          };
+
+          static const struct samsung_pin_bank_data exynos8895_pin_banks6[] __initconst = {
+              EXYNOS_PIN_BANK_EINTG(8, 0x000, "gpd0", 0x00),
+              EXYNOS_PIN_BANK_EINTG(8, 0x020, "gpd1", 0x04),
+              EXYNOS_PIN_BANK_EINTG(4, 0x040, "gpd2", 0x08),
+              EXYNOS_PIN_BANK_EINTG(5, 0x060, "gpd3", 0x0c),
+              EXYNOS_PIN_BANK_EINTG(4, 0x080, "gpb1", 0x10),
+              EXYNOS_PIN_BANK_EINTG(8, 0x0a0, "gpe7", 0x14),
+              EXYNOS_PIN_BANK_EINTG(8, 0x0c0, "gpf1", 0x18),
+          };
+
+          static const struct samsung_pin_bank_data exynos8895_pin_banks7[] __initconst = {
+              EXYNOS_PIN_BANK_EINTG(3, 0x000, "gpb0", 0x00),
+              EXYNOS_PIN_BANK_EINTG(5, 0x020, "gpc0", 0x04),
+              EXYNOS_PIN_BANK_EINTG(5, 0x040, "gpc1", 0x08),
+              EXYNOS_PIN_BANK_EINTG(8, 0x060, "gpc2", 0x0c),
+              EXYNOS_PIN_BANK_EINTG(8, 0x080, "gpc3", 0x10),
+              EXYNOS_PIN_BANK_EINTG(4, 0x0a0, "gpk0", 0x14),
+              EXYNOS_PIN_BANK_EINTG(8, 0x0c0, "gpe5", 0x18),
+              EXYNOS_PIN_BANK_EINTG(8, 0x0e0, "gpe6", 0x1c),
+              EXYNOS_PIN_BANK_EINTG(8, 0x100, "gpe2", 0x20),
+              EXYNOS_PIN_BANK_EINTG(8, 0x120, "gpe3", 0x24),
+              EXYNOS_PIN_BANK_EINTG(8, 0x140, "gpe4", 0x28),
+              EXYNOS_PIN_BANK_EINTG(4, 0x160, "gpf0", 0x2c),
+              EXYNOS_PIN_BANK_EINTG(8, 0x180, "gpe1", 0x30),
+              EXYNOS_PIN_BANK_EINTG(2, 0x1a0, "gpg0", 0x34),
+          };
+
+          static const struct samsung_pin_ctrl exynos8895_pin_ctrl[] __initconst = {
+              { .pin_banks = exynos8895_pin_banks0,
+                .nr_banks = ARRAY_SIZE(exynos8895_pin_banks0),
+                .eint_wkup_init = exynos_eint_wkup_init,
+                .suspend = exynos_pinctrl_suspend,
+                .resume = exynos_pinctrl_resume },
+              { .pin_banks = exynos8895_pin_banks1,
+                .nr_banks = ARRAY_SIZE(exynos8895_pin_banks1) },
+              { .pin_banks = exynos8895_pin_banks2,
+                .nr_banks = ARRAY_SIZE(exynos8895_pin_banks2),
+                .eint_gpio_init = exynos_eint_gpio_init },
+              { .pin_banks = exynos8895_pin_banks3,
+                .nr_banks = ARRAY_SIZE(exynos8895_pin_banks3),
+                .eint_gpio_init = exynos_eint_gpio_init,
+                .suspend = exynos_pinctrl_suspend,
+                .resume = exynos_pinctrl_resume },
+              { .pin_banks = exynos8895_pin_banks4,
+                .nr_banks = ARRAY_SIZE(exynos8895_pin_banks4),
+                .eint_gpio_init = exynos_eint_gpio_init,
+                .suspend = exynos_pinctrl_suspend,
+                .resume = exynos_pinctrl_resume },
+              { .pin_banks = exynos8895_pin_banks5,
+                .nr_banks = ARRAY_SIZE(exynos8895_pin_banks5),
+                .eint_gpio_init = exynos_eint_gpio_init,
+                .suspend = exynos_pinctrl_suspend,
+                .resume = exynos_pinctrl_resume },
+              { .pin_banks = exynos8895_pin_banks6,
+                .nr_banks = ARRAY_SIZE(exynos8895_pin_banks6),
+                .eint_gpio_init = exynos_eint_gpio_init,
+                .suspend = exynos_pinctrl_suspend,
+                .resume = exynos_pinctrl_resume },
+              { .pin_banks = exynos8895_pin_banks7,
+                .nr_banks = ARRAY_SIZE(exynos8895_pin_banks7),
+                .eint_gpio_init = exynos_eint_gpio_init,
+                .suspend = exynos_pinctrl_suspend,
+                .resume = exynos_pinctrl_resume },
+          };
+
+          const struct samsung_pinctrl_of_match_data exynos8895_of_data __initconst = {
+              .ctrl = exynos8895_pin_ctrl,
+              .num_ctrl = ARRAY_SIZE(exynos8895_pin_ctrl),
+          };
+          EOF
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          h = Path('drivers/pinctrl/samsung/pinctrl-samsung.h')
+          text = h.read_text()
+          marker = 'extern const struct samsung_pinctrl_of_match_data exynos7_of_data;'
+          text = text.replace(marker,
+              'extern const struct samsung_pinctrl_of_match_data exynos8895_of_data;\n' + marker)
+          h.write_text(text)
+
+          c = Path('drivers/pinctrl/samsung/pinctrl-samsung.c')
+          text = c.read_text()
+          marker = '{ .compatible = "samsung,exynos7-pinctrl",\n\t\t.data = &exynos7_of_data },'
+          replacement = ('{ .compatible = "samsung,exynos8895-pinctrl",\n'
+                         '\t\t.data = &exynos8895_of_data },\n\t' + marker)
+          if marker not in text:
+              raise SystemExit('Exynos7 OF match marker not found')
+          c.write_text(text.replace(marker, replacement))
+
+          m = Path('drivers/pinctrl/samsung/Makefile')
+          text = m.read_text()
+          if 'pinctrl-exynos8895.o' not in text:
+              text += '\n# ALice Exynos8895 Linux 4.19 bring-up\nobj-y += pinctrl-exynos8895.o\n'
+          m.write_text(text)
+          PY
+
+          sha256sum drivers/pinctrl/samsung/pinctrl-exynos8895.c \
+                    drivers/pinctrl/samsung/pinctrl-samsung.c \
+                    drivers/pinctrl/samsung/pinctrl-samsung.h \
+                    drivers/pinctrl/samsung/Makefile \
+                    > phase4-pinctrl-import-SHA256SUMS.txt
+
+      - name: Configure Phase-2 base with pinctrl core
+        run: |
+          cat > phase4-pinctrl.config <<'EOF'
+          CONFIG_PINCTRL=y
+          CONFIG_PINCTRL_SAMSUNG=y
+          CONFIG_PINCTRL_EXYNOS=y
+          CONFIG_PINCTRL_EXYNOS_ARM64=y
+          EOF
+          mkdir -p out-phase4-pinctrl
+          ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            scripts/kconfig/merge_config.sh -O out-phase4-pinctrl \
+            arch/arm64/configs/defconfig \
+            arch/arm64/configs/alice_dream2lte_4_19_phase2.config \
+            phase4-pinctrl.config \
+            2>&1 | tee phase4-pinctrl-config.log
+
+      - name: Compile Exynos8895 pinctrl closure
+        run: |
+          set +e
+          set -o pipefail
+          make O="$GITHUB_WORKSPACE/out-phase4-pinctrl" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- prepare scripts
+          make O="$GITHUB_WORKSPACE/out-phase4-pinctrl" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j2 \
+            drivers/pinctrl/samsung/pinctrl-exynos8895.o \
+            drivers/pinctrl/samsung/pinctrl-samsung.o \
+            drivers/pinctrl/samsung/pinctrl-exynos.o \
+            2>&1 | tee phase4-pinctrl-build.log
+          status=${PIPESTATUS[0]}
+          echo "$status" > phase4-pinctrl-exit-code.txt
+          exit 0
+
+      - name: Collect pinctrl evidence
+        if: always()
+        run: |
+          : > phase4-pinctrl-object-SHA256SUMS.txt
+          for obj in pinctrl-exynos8895 pinctrl-samsung pinctrl-exynos; do
+            src="out-phase4-pinctrl/drivers/pinctrl/samsung/${obj}.o"
+            if test -s "$src"; then
+              sha256sum "$src" >> phase4-pinctrl-object-SHA256SUMS.txt
+            fi
+          done
+          {
+            echo 'scope=object-closure-gate-only'
+            echo 'kernel=4.19.325'
+            echo 'subsystem=Exynos8895 pinctrl bank data on Linux 4.19 Samsung core'
+            echo 'controllers=8'
+            echo 'banks=36'
+            echo 'vendor_irq_driver_copied=no'
+            echo 'linux_4_19_eint_core=preserved'
+            echo "compile_exit=$(cat phase4-pinctrl-exit-code.txt)"
+            echo 'physical_boot=not_tested'
+          } > phase4-pinctrl-status.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dream2lte-linux-4.19-phase4-pinctrl-probe
+          path: |
+            phase4-pinctrl.config
+            phase4-pinctrl-config.log
+            phase4-pinctrl-build.log
+            phase4-pinctrl-exit-code.txt
+            phase4-pinctrl-status.txt
+            phase4-pinctrl-import-SHA256SUMS.txt
+            phase4-pinctrl-object-SHA256SUMS.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Enforce pinctrl compile result
+        run: exit "$(cat phase4-pinctrl-exit-code.txt)"
