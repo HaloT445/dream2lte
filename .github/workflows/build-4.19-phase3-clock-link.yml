@@ -42,6 +42,13 @@ jobs:
 
           cp exynos8895-4.4/include/linux/exynos-ss.h include/linux/
           sed -i 's/#define exynos_ss_clk(a,b,c)[[:space:]]*/#define exynos_ss_clk(a,b,c,d)\t/' include/linux/exynos-ss.h
+          cat >> include/linux/exynos-ss.h <<'EOF'
+          #ifndef CONFIG_EXYNOS_SNAPSHOT
+          #ifndef exynos_ss_pmu
+          #define exynos_ss_pmu(a,b,c) do { } while (0)
+          #endif
+          #endif
+          EOF
 
           mkdir -p include/soc/samsung
           cp exynos8895-4.4/include/soc/samsung/cal-if.h include/soc/samsung/
