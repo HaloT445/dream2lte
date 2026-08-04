@@ -34,6 +34,7 @@ jobs:
 
       - name: Apply verified clock CAL and BOOT_SAFE power-domain ports
         run: |
+          set -o pipefail
           bash scripts/port/apply_exynos8895_clock_cal.sh \
             exynos8895-4.4 phase5-clock-cal-import-SHA256SUMS.txt
           python3 scripts/port/apply_exynos8895_clock_build_flags.py
@@ -42,11 +43,13 @@ jobs:
           python3 scripts/port/apply_exynos8895_pd_safe.py
           grep -F 'GENPD_FLAG_ALWAYS_ON' drivers/soc/samsung/exynos8895-pd-safe.c
           grep -F 'obj-y += exynos8895-pd-safe.o' drivers/soc/samsung/Makefile
+          grep -F 'extern int cal_pd_control' drivers/soc/samsung/exynos8895-pd-safe.c
           sha256sum drivers/soc/samsung/exynos8895-pd-safe.c \
             > phase5-pd-import-SHA256SUMS.txt
 
       - name: Configure generic power domains
         run: |
+          set -o pipefail
           cat > phase5-pd-safe.config <<'EOF'
           CONFIG_PM=y
           CONFIG_PM_GENERIC_DOMAINS=y
@@ -100,6 +103,7 @@ jobs:
             echo 'domains_expected=15-enabled-1-disabled'
             echo 'runtime_power_off=blocked'
             echo 'genpd_always_on=yes'
+            echo 'cal_private_headers=not_included'
             echo 'cal_power_on=enabled'
             echo "compile_exit=$(cat phase5-pd-exit-code.txt)"
             echo 'physical_boot=not_tested'
