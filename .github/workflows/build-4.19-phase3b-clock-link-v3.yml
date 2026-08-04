@@ -1,4 +1,4 @@
-name: Build Android 4.19 phase 3B Exynos8895 clock link v6
+name: Build Android 4.19 phase 3B Exynos8895 clock link v7
 
 on:
   pull_request:
@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 jobs:
-  clock-link-v6:
+  clock-link-v7:
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     steps:
@@ -39,8 +39,13 @@ jobs:
         run: |
           bash scripts/port/apply_exynos8895_clock_cal.sh \
             exynos8895-4.4 phase3b-link-imported-SHA256SUMS.txt
+          python3 scripts/port/apply_exynos8895_clock_build_flags.py
           python3 scripts/port/audit_exynos8895_clock_namespace.py \
             | tee phase3b-clock-namespace-audit.txt
+          grep -F 'CFLAGS_clk-exynos8895.o += -DCONFIG_CAL_IF' \
+            drivers/clk/samsung/Makefile
+          grep -F 'subdir-ccflags-y += -DCONFIG_CAL_IF' \
+            drivers/soc/samsung/cal-if/Makefile
 
       - name: Merge Phase-2 Android configuration
         run: |
@@ -57,10 +62,8 @@ jobs:
         run: |
           set +e
           set -o pipefail
-          CAL_DEFINES='-DCONFIG_CAL_IF -DCONFIG_PMUCAL -DCONFIG_CMUCAL -DCONFIG_SOC_EXYNOS8895 -DCLK_IS_ROOT=0'
           make O="$GITHUB_WORKSPACE/out-phase3b-link" \
-            ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-            KCFLAGS="$CAL_DEFINES" -j2 \
+            ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j2 \
             Image exynos/exynos8895-dream2lte_eur_open_10.dtb \
             2>&1 | tee phase3b-link-build.log
           status=${PIPESTATUS[0]}
@@ -94,6 +97,7 @@ jobs:
             echo 'subsystem=Exynos8895 clock CAL PMUCAL'
             echo 'cal_object_closure=verified-pass'
             echo 'vendor_namespace_audit=required-pass'
+            echo 'build_flags=source-local-no-global-kcflags'
             echo 'core_samsung_clock_and_pll=preserved'
             echo 'ect=disabled-header-stubs'
             echo 'acpm_dvfs=disabled-noop-stubs'
@@ -106,7 +110,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: dream2lte-linux-4.19-phase3b-clock-link-v6
+          name: dream2lte-linux-4.19-phase3b-clock-link-v7
           path: |
             Image-dream2lte-4.19-phase3b-clock-link
             exynos8895-dream2lte_eur_open_10-phase3b-clock-link.dtb
