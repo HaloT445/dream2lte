@@ -8,6 +8,10 @@ on:
       - .github/workflows/materialize-5.15-android-common-source.yml
   workflow_dispatch:
 
+concurrency:
+  group: dream2lte-5.15-source-materialize
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
