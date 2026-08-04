@@ -49,6 +49,34 @@ EOF
 python3 - <<'PY'
 from pathlib import Path
 
+# Keep the Linux 4.19 Samsung common-clock and PLL ABI untouched. The vendor
+# provider uses the older clk_onecell_data ABI, so all colliding global symbols
+# are isolated under an Exynos8895-specific namespace.
+vendor_renames = {
+    'samsung_clk_save': 'exynos8895_vendor_clk_save',
+    'samsung_clk_restore': 'exynos8895_vendor_clk_restore',
+    'samsung_clk_alloc_reg_dump': 'exynos8895_vendor_clk_alloc_reg_dump',
+    'samsung_clk_init': 'exynos8895_vendor_clk_init',
+    'samsung_clk_of_add_provider': 'exynos8895_vendor_clk_of_add_provider',
+    'samsung_pll2650x_recalc_rate': 'exynos8895_vendor_pll2650x_recalc_rate',
+    'samsung_pll2650x_set_rate': 'exynos8895_vendor_pll2650x_set_rate',
+    'samsung_pll_round_rate': 'exynos8895_vendor_pll_round_rate',
+}
+for name in ('drivers/clk/samsung/composite.c',
+             'drivers/clk/samsung/composite.h'):
+    path = Path(name)
+    text = path.read_text()
+    for old, new in vendor_renames.items():
+        text = text.replace(old, new)
+    path.write_text(text)
+
+provider = Path('drivers/clk/samsung/clk-exynos8895.c')
+text = provider.read_text()
+text = text.replace('samsung_clk_init(', 'exynos8895_vendor_clk_init(')
+text = text.replace('samsung_clk_of_add_provider(',
+                    'exynos8895_vendor_clk_of_add_provider(')
+provider.write_text(text)
+
 snapshot = Path('include/linux/exynos-ss.h')
 text = snapshot.read_text()
 text = text.replace(
