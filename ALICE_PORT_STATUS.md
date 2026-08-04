@@ -48,13 +48,21 @@ The Phase-2 configuration enables Binder devices, ASHMEM, SELinux, cgroups, name
 - GitHub Actions artifact digest: `sha256:54b5c9cc47e7b9a3d9fbc40d616655d7ba34ae8a9d1f16e942b364963b8250ef`
 - Detailed record: `evidence/PHASE3_CLOCK_OBJECT_BUILD.md`
 
-Compatibility remains isolated to the CI probe: Linux CAL path selection, Samsung composite layer, Exynos snapshot no-op interface, disabled snapshot macro arity correction and `CLK_IS_ROOT=0` mapping.
+### Phase 3 CAL/PMUCAL/CMUCAL closure
+
+- Requested object closure compile: PASS
+- Verified objects: clock provider, Samsung composite, CAL interface, CMUCAL, PMUCAL system/local/CPU/RAE, RA, VCLK, PLL specification, Exynos8895 platform clock data and PMU compatibility wrapper.
+- GitHub Actions run: `30865663933`
+- GitHub Actions artifact digest: `sha256:3dd4fbb62d6886f5acab3313819bcd08220c1fa4684e4238a97bf317443a806d`
+- Detailed record: `evidence/PHASE3_CAL_CLOSURE_BUILD.md`
+
+Compatibility remains isolated to CI: Linux CAL path selection, Samsung composite layer, ECT/ACPM disabled stubs, Exynos Snapshot no-op interfaces, disabled snapshot macro corrections, `CLK_IS_ROOT=0`, regmap PMU wrapper and explicit Exynos8895 CAL Kbuild.
 
 The generated Phase-2 Image still uses generic/common platform support. It is not a proven dream2lte device kernel and must not be flashed as a release build.
 
 ## Current next gate
 
-Phase 3B links CAL, PMUCAL, the Samsung composite layer and the Exynos8895 clock provider into the Phase-2 ARM64 Image. A PASS is required before these vendor files or compatibility changes are materialized into this source branch.
+Phase 3B full-link v3, run `30865920169`, links the verified CAL/clock closure into the complete Phase-2 ARM64 Image and dream2lte DTB. A PASS is required before vendor clock/CAL files or compatibility changes are materialized into this source branch.
 
 ## Not validated
 
