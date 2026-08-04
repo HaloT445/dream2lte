@@ -1,0 +1,182 @@
+name: Probe Android 4.19 phase 3 CAL closure
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cal-closure:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout materialized Linux 4.19 source
+        uses: actions/checkout@v4
+        with:
+          ref: port/linux-4.19-source
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential flex gcc-aarch64-linux-gnu libelf-dev libssl-dev python3 rsync
+
+      - name: Fetch pinned Exynos8895 4.4 source
+        run: |
+          mkdir exynos8895-4.4
+          git -C exynos8895-4.4 init
+          git -C exynos8895-4.4 remote add origin https://github.com/boloaimer/exynos-8895.git
+          git -C exynos8895-4.4 fetch --depth=1 origin dcdaf6878e7f9497e1d90e25980decfa5d684f74
+          git -C exynos8895-4.4 checkout --detach FETCH_HEAD
+          test "$(git -C exynos8895-4.4 rev-parse HEAD)" = "dcdaf6878e7f9497e1d90e25980decfa5d684f74"
+
+      - name: Import isolated CAL compile closure
+        run: |
+          set -e
+          cp exynos8895-4.4/drivers/clk/samsung/clk-exynos8895.c drivers/clk/samsung/
+          cp exynos8895-4.4/drivers/clk/samsung/composite.c drivers/clk/samsung/
+          cp exynos8895-4.4/drivers/clk/samsung/composite.h drivers/clk/samsung/
+          cp exynos8895-4.4/include/linux/exynos-ss.h include/linux/
+          sed -i 's/#define exynos_ss_clk(a,b,c)[[:space:]]*/#define exynos_ss_clk(a,b,c,d)\t/' include/linux/exynos-ss.h
+          cat >> include/linux/exynos-ss.h <<'EOF'
+          #ifndef CONFIG_EXYNOS_SNAPSHOT
+          #ifndef exynos_ss_pmu
+          #define exynos_ss_pmu(a,b,c) do { } while (0)
+          #endif
+          #endif
+          EOF
+
+          mkdir -p include/soc/samsung
+          cp exynos8895-4.4/include/soc/samsung/cal-if.h include/soc/samsung/
+          cp exynos8895-4.4/include/soc/samsung/ect_parser.h include/soc/samsung/
+          cp exynos8895-4.4/include/soc/samsung/exynos-pmu.h include/soc/samsung/
+          rm -rf drivers/soc/samsung/cal-if
+          cp -a exynos8895-4.4/drivers/soc/samsung/cal-if drivers/soc/samsung/
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('drivers/soc/samsung/cal-if/acpm_dvfs.h')
+          text = p.read_text()
+          text = text.replace(
+              'static inline int exynos_acpm_set_volt_margin(unsigned int id, int volt);\n{',
+              'static inline int exynos_acpm_set_volt_margin(unsigned int id, int volt)\n{')
+          text = text.replace(
+              'static inline int exynos_acpm_set_cold_temp(unsigned int id, bool is_cold_temp);\n{',
+              'static inline int exynos_acpm_set_cold_temp(unsigned int id, bool is_cold_temp)\n{')
+          p.write_text(text)
+          PY
+
+          cat > drivers/soc/samsung/exynos8895-pmu-compat.c <<'EOF'
+          // SPDX-License-Identifier: GPL-2.0
+          #include <linux/err.h>
+          #include <linux/regmap.h>
+          #include <linux/soc/samsung/exynos-pmu.h>
+          #include <soc/samsung/exynos-pmu.h>
+
+          static struct regmap *alice_exynos8895_pmu_regmap(void)
+          {
+              static struct regmap *map;
+              if (!map)
+                  map = exynos_get_pmu_regmap();
+              return map;
+          }
+
+          int exynos_pmu_read(unsigned int offset, unsigned int *val)
+          {
+              struct regmap *map = alice_exynos8895_pmu_regmap();
+              if (IS_ERR(map))
+                  return PTR_ERR(map);
+              return regmap_read(map, offset, val);
+          }
+
+          int exynos_pmu_write(unsigned int offset, unsigned int val)
+          {
+              struct regmap *map = alice_exynos8895_pmu_regmap();
+              if (IS_ERR(map))
+                  return PTR_ERR(map);
+              return regmap_write(map, offset, val);
+          }
+
+          int exynos_pmu_update(unsigned int offset, unsigned int mask,
+                                unsigned int val)
+          {
+              struct regmap *map = alice_exynos8895_pmu_regmap();
+              if (IS_ERR(map))
+                  return PTR_ERR(map);
+              return regmap_update_bits(map, offset, mask, val);
+          }
+          EOF
+
+      - name: Configure Phase-2 base
+        run: |
+          mkdir -p out-phase3-cal
+          ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            scripts/kconfig/merge_config.sh -O out-phase3-cal \
+            arch/arm64/configs/defconfig \
+            arch/arm64/configs/alice_dream2lte_4_19_phase2.config \
+            2>&1 | tee phase3-cal-config.log
+
+      - name: Compile full CAL object closure
+        run: |
+          set +e
+          set -o pipefail
+          CAL_DEFINES='-DCONFIG_CAL_IF -DCONFIG_PMUCAL -DCONFIG_CMUCAL -DCONFIG_SOC_EXYNOS8895 -DCLK_IS_ROOT=0'
+          make O="$GITHUB_WORKSPACE/out-phase3-cal" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            KCFLAGS="$CAL_DEFINES" prepare scripts
+          make O="$GITHUB_WORKSPACE/out-phase3-cal" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            KCFLAGS="$CAL_DEFINES" -j2 \
+            drivers/clk/samsung/composite.o \
+            drivers/clk/samsung/clk-exynos8895.o \
+            drivers/soc/samsung/exynos8895-pmu-compat.o \
+            drivers/soc/samsung/cal-if/cal-if.o \
+            drivers/soc/samsung/cal-if/pmucal_system.o \
+            drivers/soc/samsung/cal-if/pmucal_local.o \
+            drivers/soc/samsung/cal-if/pmucal_cpu.o \
+            drivers/soc/samsung/cal-if/pmucal_rae.o \
+            drivers/soc/samsung/cal-if/cmucal.o \
+            drivers/soc/samsung/cal-if/ra.o \
+            drivers/soc/samsung/cal-if/vclk.o \
+            drivers/soc/samsung/cal-if/pll_spec.o \
+            drivers/soc/samsung/cal-if/exynos8895/cal_data.o \
+            2>&1 | tee phase3-cal-build.log
+          status=${PIPESTATUS[0]}
+          echo "$status" > phase3-cal-exit-code.txt
+          exit 0
+
+      - name: Collect CAL closure evidence
+        if: always()
+        run: |
+          : > phase3-cal-object-SHA256SUMS.txt
+          find out-phase3-cal/drivers/clk/samsung out-phase3-cal/drivers/soc/samsung \
+            -type f -name '*.o' -print0 2>/dev/null | sort -z | while IFS= read -r -d '' obj; do
+              sha256sum "$obj" >> phase3-cal-object-SHA256SUMS.txt
+            done
+          {
+            echo 'scope=object-closure-gate-only'
+            echo 'kernel=4.19.325'
+            echo 'subsystem=Exynos8895 clock CAL PMUCAL'
+            echo 'ect=disabled-header-stubs'
+            echo 'acpm_dvfs=disabled-noop-stubs'
+            echo 'exynos_snapshot=disabled-noop-interface-only'
+            echo "compile_exit=$(cat phase3-cal-exit-code.txt)"
+            echo 'physical_boot=not_tested'
+          } > phase3-cal-status.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dream2lte-linux-4.19-phase3-cal-closure
+          path: |
+            phase3-cal-config.log
+            phase3-cal-build.log
+            phase3-cal-exit-code.txt
+            phase3-cal-status.txt
+            phase3-cal-object-SHA256SUMS.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Enforce CAL closure result
+        run: exit "$(cat phase3-cal-exit-code.txt)"
