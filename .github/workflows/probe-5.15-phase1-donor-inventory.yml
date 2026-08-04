@@ -1,0 +1,64 @@
+name: Probe Linux 5.15 phase 1 Exynos8895 donor inventory
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/probe-5.15-phase1-donor-inventory.yml
+      - scripts/port5/inventory_4_4_donor.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  donor-inventory:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout coordination branch
+        uses: actions/checkout@v4
+        with:
+          ref: port/linux-5.15-bringup
+          fetch-depth: 1
+
+      - name: Fetch pinned Linux 4.4 Exynos8895 donor
+        run: |
+          set -euo pipefail
+          mkdir exynos8895-4.4
+          git -C exynos8895-4.4 init
+          git -C exynos8895-4.4 remote add origin \
+            https://github.com/boloaimer/exynos-8895.git
+          git -C exynos8895-4.4 fetch --depth=1 origin \
+            dcdaf6878e7f9497e1d90e25980decfa5d684f74
+          git -C exynos8895-4.4 checkout --detach FETCH_HEAD
+          test "$(git -C exynos8895-4.4 rev-parse HEAD)" = \
+            "dcdaf6878e7f9497e1d90e25980decfa5d684f74"
+
+      - name: Generate strict donor manifest
+        run: |
+          set -euo pipefail
+          python3 scripts/port5/inventory_4_4_donor.py \
+            exynos8895-4.4 donor-evidence \
+            | tee donor-inventory.log
+          test -s donor-evidence/exynos8895-4.4-donor-manifest.json
+          test -s donor-evidence/exynos8895-4.4-donor-SHA256SUMS.txt
+          grep -qx 'generic_4_4_core_copy=forbidden' \
+            donor-evidence/exynos8895-4.4-donor-summary.txt
+          grep -qx 'kernel_su_susfs=excluded-from-boot-safe' \
+            donor-evidence/exynos8895-4.4-donor-summary.txt
+
+      - name: Upload donor evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: dream2lte-linux-5.15-phase1-exynos8895-donor-inventory
+          path: |
+            donor-inventory.log
+            donor-evidence/exynos8895-4.4-donor-manifest.json
+            donor-evidence/exynos8895-4.4-donor-SHA256SUMS.txt
+            donor-evidence/exynos8895-4.4-donor-summary.txt
+            donor-evidence/DO_NOT_COPY_4_4_CORE.txt
+          if-no-files-found: error
+          retention-days: 14
