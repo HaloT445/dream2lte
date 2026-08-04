@@ -1,0 +1,201 @@
+name: Materialize pinned Android Common Linux 5.15 source
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/materialize-5.15-android-common-source.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  materialize-5-15-source:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+
+    env:
+      COMMON_URL: https://android.googlesource.com/kernel/common
+      COMMON_BRANCH: android14-5.15
+      COMMON_REF: refs/heads/android14-5.15
+      COMMON_SHA: b10e5e5b5c5e01d49829aec34b65a0d717d6f2f5
+      COMMON_TREE: 7c3cd26c765b741df608a8b81cc6b93f1240fa36
+      TARGET_BRANCH: port/linux-5.15-source
+
+    steps:
+      - name: Checkout isolated Linux 5.15 source branch
+        uses: actions/checkout@v4
+        with:
+          ref: port/linux-5.15-source
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential clang dwarves flex git libelf-dev \
+            libssl-dev lld llvm python3 rsync
+
+      - name: Fetch exact official Android Common 5.15 commit
+        run: |
+          set -euo pipefail
+          COMMON="$RUNNER_TEMP/android-common-5.15"
+          mkdir -p "$COMMON"
+          git -C "$COMMON" init
+          git -C "$COMMON" remote add origin "$COMMON_URL"
+          git -C "$COMMON" fetch --depth=1 origin "$COMMON_REF"
+          git -C "$COMMON" checkout --detach FETCH_HEAD
+
+          test "$(git -C "$COMMON" rev-parse HEAD)" = "$COMMON_SHA"
+          test "$(git -C "$COMMON" rev-parse HEAD^{tree})" = "$COMMON_TREE"
+          test "$(sed -n 's/^VERSION = //p' "$COMMON/Makefile")" = "5"
+          test "$(sed -n 's/^PATCHLEVEL = //p' "$COMMON/Makefile")" = "15"
+          test -f "$COMMON/arch/arm64/configs/gki_defconfig"
+          test -f "$COMMON/drivers/android/binder.c"
+          test -d "$COMMON/fs/erofs"
+          test -d "$COMMON/fs/incfs"
+
+      - name: Build clean arm64 GKI Image before materialization
+        run: |
+          set -euo pipefail
+          COMMON="$RUNNER_TEMP/android-common-5.15"
+          OUT="$RUNNER_TEMP/out-5.15-materialize"
+          make -C "$COMMON" O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            gki_defconfig 2>&1 | tee "$RUNNER_TEMP/materialize-config.log"
+          cp "$OUT/.config" "$RUNNER_TEMP/materialize-gki.config"
+
+          make -C "$COMMON" O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            -j2 Image 2>&1 | tee "$RUNNER_TEMP/materialize-build.log"
+
+          IMAGE="$OUT/arch/arm64/boot/Image"
+          test -s "$IMAGE"
+          cp "$IMAGE" "$RUNNER_TEMP/Image-android-common-5.15-clean"
+          sha256sum "$RUNNER_TEMP/Image-android-common-5.15-clean" \
+            "$RUNNER_TEMP/materialize-gki.config" \
+            > "$RUNNER_TEMP/materialize-SHA256SUMS.txt"
+          file "$RUNNER_TEMP/Image-android-common-5.15-clean" \
+            > "$RUNNER_TEMP/materialize-file-identification.txt"
+
+      - name: Replace target branch worktree with exact source tree
+        run: |
+          set -euo pipefail
+          COMMON="$RUNNER_TEMP/android-common-5.15"
+
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf -- {} +
+          rsync -a --delete --exclude=.git/ "$COMMON/" ./
+
+          test "$(sed -n 's/^VERSION = //p' Makefile)" = "5"
+          test "$(sed -n 's/^PATCHLEVEL = //p' Makefile)" = "15"
+          test -f arch/arm64/configs/gki_defconfig
+          test -f drivers/android/binder.c
+
+          mkdir -p evidence scripts/port5
+          cat > ALICE_DREAM2LTE_5_15_BASELINE.md <<EOF
+          # ALice dream2lte Android Common Linux 5.15 baseline
+
+          - Source: official Android Common Kernel
+          - Repository: $COMMON_URL
+          - Branch: $COMMON_BRANCH
+          - Commit: $COMMON_SHA
+          - Git tree: $COMMON_TREE
+          - Architecture: arm64
+          - Baseline config: gki_defconfig
+          - Clean Image build: PASS before materialization
+          - Exynos8895 device code imported: no
+          - KernelSU imported: no
+          - SUSFS imported: no
+          - Overclock/voltage changes: no
+          - Physical boot: not tested
+          - One UI 8: not tested
+
+          This branch is a source baseline for direct dream2lte migration from
+          Linux 4.4.302 to Linux 5.15. It is not a flashable device kernel.
+          EOF
+
+          cat > evidence/PHASE0_ANDROID_COMMON_5_15.md <<EOF
+          # Phase 0 Android Common Linux 5.15 evidence
+
+          ## Pinned source
+
+          - Branch: $COMMON_BRANCH
+          - Commit: $COMMON_SHA
+          - Tree: $COMMON_TREE
+
+          ## Gate
+
+          - `gki_defconfig`: PASS
+          - arm64 `Image`: PASS
+          - Binder source: present
+          - EROFS: present
+          - Incremental FS: present
+          - Exynos8895 imports: none
+          - KernelSU/SUSFS/OC: none
+          - Physical boot: not tested
+          - One UI 8: not tested
+
+          The build artifact and complete logs are retained by the materialize
+          workflow. This evidence does not authorize flashing.
+          EOF
+
+          cp "$RUNNER_TEMP/materialize-SHA256SUMS.txt" \
+            evidence/PHASE0_ANDROID_COMMON_5_15_SHA256SUMS.txt
+          cp "$RUNNER_TEMP/materialize-file-identification.txt" \
+            evidence/PHASE0_ANDROID_COMMON_5_15_FILE.txt
+
+          cat > scripts/port5/README.md <<'EOF'
+          # dream2lte Linux 5.15 port scripts
+
+          Only deterministic, checksum-audited device-extension imports belong
+          here. Generic Linux 4.4 kernel core code must not be copied into this
+          Android Common 5.15 source tree.
+          EOF
+
+      - name: Audit materialized source and repository limits
+        run: |
+          set -euo pipefail
+          test "$(git -C "$RUNNER_TEMP/android-common-5.15" rev-parse HEAD)" = \
+            "$COMMON_SHA"
+
+          if find . -path ./.git -prune -o -type f -size +95M -print \
+            | tee oversized-files.txt | grep -q .; then
+            echo 'Files near or over the GitHub 100 MiB limit were found' >&2
+            exit 1
+          fi
+          rm -f oversized-files.txt
+
+          git status --short | tee materialize-status.txt
+          test -s materialize-status.txt
+          git diff --check
+
+      - name: Commit exact Android Common 5.15 source
+        run: |
+          set -euo pipefail
+          git config user.name "ALice CI"
+          git config user.email "halot4004@gmail.com"
+          git add -A
+          git diff --cached --check
+          git commit -m \
+            "Import Android Common 5.15 baseline b10e5e5b5c5e"
+          git push origin HEAD:"$TARGET_BRANCH"
+
+      - name: Upload clean baseline build evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dream2lte-android-common-5.15-materialized-baseline
+          path: |
+            ${{ runner.temp }}/Image-android-common-5.15-clean
+            ${{ runner.temp }}/materialize-gki.config
+            ${{ runner.temp }}/materialize-config.log
+            ${{ runner.temp }}/materialize-build.log
+            ${{ runner.temp }}/materialize-SHA256SUMS.txt
+            ${{ runner.temp }}/materialize-file-identification.txt
+            ALICE_DREAM2LTE_5_15_BASELINE.md
+            evidence/PHASE0_ANDROID_COMMON_5_15.md
+            evidence/PHASE0_ANDROID_COMMON_5_15_SHA256SUMS.txt
+            evidence/PHASE0_ANDROID_COMMON_5_15_FILE.txt
+          if-no-files-found: warn
+          retention-days: 14
