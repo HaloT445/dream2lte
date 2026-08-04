@@ -1,4 +1,4 @@
-name: Build Android 4.19 phase 3B Exynos8895 clock link v3
+name: Build Android 4.19 phase 3B Exynos8895 clock link v4
 
 on:
   pull_request:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  clock-link-v3:
+  clock-link-v4:
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     steps:
@@ -39,6 +39,33 @@ jobs:
           cp exynos8895-4.4/drivers/clk/samsung/clk-exynos8895.c drivers/clk/samsung/
           cp exynos8895-4.4/drivers/clk/samsung/composite.c drivers/clk/samsung/
           cp exynos8895-4.4/drivers/clk/samsung/composite.h drivers/clk/samsung/
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          vendor_renames = {
+              'samsung_clk_save': 'exynos8895_vendor_clk_save',
+              'samsung_clk_restore': 'exynos8895_vendor_clk_restore',
+              'samsung_clk_alloc_reg_dump': 'exynos8895_vendor_clk_alloc_reg_dump',
+              'samsung_clk_init': 'exynos8895_vendor_clk_init',
+              'samsung_clk_of_add_provider': 'exynos8895_vendor_clk_of_add_provider',
+          }
+          for name in ('drivers/clk/samsung/composite.c',
+                       'drivers/clk/samsung/composite.h'):
+              path = Path(name)
+              text = path.read_text()
+              for old, new in vendor_renames.items():
+                  text = text.replace(old, new)
+              path.write_text(text)
+
+          provider = Path('drivers/clk/samsung/clk-exynos8895.c')
+          text = provider.read_text()
+          text = text.replace('samsung_clk_init(',
+                              'exynos8895_vendor_clk_init(')
+          text = text.replace('samsung_clk_of_add_provider(',
+                              'exynos8895_vendor_clk_of_add_provider(')
+          provider.write_text(text)
+          PY
 
           cp exynos8895-4.4/include/linux/exynos-ss.h include/linux/
           sed -i 's/#define exynos_ss_clk(a,b,c)[[:space:]]*/#define exynos_ss_clk(a,b,c,d)\t/' include/linux/exynos-ss.h
@@ -191,6 +218,8 @@ jobs:
             echo 'kernel=4.19.325'
             echo 'subsystem=Exynos8895 clock CAL PMUCAL'
             echo 'cal_object_closure=verified-pass'
+            echo 'vendor_provider_namespace=exynos8895_vendor'
+            echo 'core_samsung_clock_provider=preserved'
             echo 'ect=disabled-header-stubs'
             echo 'acpm_dvfs=disabled-noop-stubs'
             echo 'exynos_snapshot=disabled-noop-interface-only'
@@ -202,7 +231,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: dream2lte-linux-4.19-phase3b-clock-link
+          name: dream2lte-linux-4.19-phase3b-clock-link-v4
           path: |
             Image-dream2lte-4.19-phase3b-clock-link
             exynos8895-dream2lte_eur_open_10-phase3b-clock-link.dtb
