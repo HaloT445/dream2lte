@@ -39,11 +39,22 @@ This branch is an isolated, non-bootable bring-up tree. It must not replace the 
 
 The Phase-2 configuration enables Binder devices, ASHMEM, SELinux, cgroups, namespaces, seccomp, ext4/F2FS encryption, dm-verity, generic UFS/MMC, Samsung UART and pstore. KernelSU, SUSFS and overclocking remain disabled.
 
-The generated Image still uses generic/common platform support. It is not a proven dream2lte device kernel and must not be flashed as a release build.
+### Phase 3A — Exynos8895 clock objects
+
+- Samsung composite clock object compile: PASS
+- Composite object SHA-256: `c3c27af5deeae30499fc233e114526b82b2c7d081316dfdce454f9cd6d5c79e3`
+- Exynos8895 clock provider object compile: PASS
+- Clock provider object SHA-256: `672a0708f04d16c5018b8db11a06aad4c990451d8129f53712fb33e60d23279a`
+- GitHub Actions artifact digest: `sha256:54b5c9cc47e7b9a3d9fbc40d616655d7ba34ae8a9d1f16e942b364963b8250ef`
+- Detailed record: `evidence/PHASE3_CLOCK_OBJECT_BUILD.md`
+
+Compatibility remains isolated to the CI probe: Linux CAL path selection, Samsung composite layer, Exynos snapshot no-op interface, disabled snapshot macro arity correction and `CLK_IS_ROOT=0` mapping.
+
+The generated Phase-2 Image still uses generic/common platform support. It is not a proven dream2lte device kernel and must not be flashed as a release build.
 
 ## Current next gate
 
-Phase 3 is compiling the Exynos8895 clock provider and Samsung CAL/composite dependency closure against Linux 4.19. The probe is isolated from this source branch until its object-level compile gate passes.
+Phase 3B links CAL, PMUCAL, the Samsung composite layer and the Exynos8895 clock provider into the Phase-2 ARM64 Image. A PASS is required before these vendor files or compatibility changes are materialized into this source branch.
 
 ## Not validated
 
