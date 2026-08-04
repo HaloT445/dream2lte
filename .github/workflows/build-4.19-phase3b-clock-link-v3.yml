@@ -1,0 +1,222 @@
+name: Build Android 4.19 phase 3B Exynos8895 clock link v3
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  clock-link-v3:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout materialized Linux 4.19 source
+        uses: actions/checkout@v4
+        with:
+          ref: port/linux-4.19-source
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential flex gcc-aarch64-linux-gnu libelf-dev libssl-dev python3 rsync
+
+      - name: Fetch pinned Exynos8895 4.4 source
+        run: |
+          mkdir exynos8895-4.4
+          git -C exynos8895-4.4 init
+          git -C exynos8895-4.4 remote add origin https://github.com/boloaimer/exynos-8895.git
+          git -C exynos8895-4.4 fetch --depth=1 origin dcdaf6878e7f9497e1d90e25980decfa5d684f74
+          git -C exynos8895-4.4 checkout --detach FETCH_HEAD
+          test "$(git -C exynos8895-4.4 rev-parse HEAD)" = "dcdaf6878e7f9497e1d90e25980decfa5d684f74"
+
+      - name: Import verified clock and CAL link closure
+        run: |
+          set -e
+          cp exynos8895-4.4/drivers/clk/samsung/clk-exynos8895.c drivers/clk/samsung/
+          cp exynos8895-4.4/drivers/clk/samsung/composite.c drivers/clk/samsung/
+          cp exynos8895-4.4/drivers/clk/samsung/composite.h drivers/clk/samsung/
+
+          cp exynos8895-4.4/include/linux/exynos-ss.h include/linux/
+          sed -i 's/#define exynos_ss_clk(a,b,c)[[:space:]]*/#define exynos_ss_clk(a,b,c,d)\t/' include/linux/exynos-ss.h
+          cat >> include/linux/exynos-ss.h <<'EOF'
+          #ifndef CONFIG_EXYNOS_SNAPSHOT
+          #ifndef exynos_ss_pmu
+          #define exynos_ss_pmu(a,b,c) do { } while (0)
+          #endif
+          #endif
+          EOF
+
+          mkdir -p include/soc/samsung
+          cp exynos8895-4.4/include/soc/samsung/cal-if.h include/soc/samsung/
+          cp exynos8895-4.4/include/soc/samsung/ect_parser.h include/soc/samsung/
+          cp exynos8895-4.4/include/soc/samsung/exynos-pmu.h include/soc/samsung/
+
+          rm -rf drivers/soc/samsung/cal-if
+          cp -a exynos8895-4.4/drivers/soc/samsung/cal-if drivers/soc/samsung/
+          cat > drivers/soc/samsung/cal-if/exynos8895/Makefile <<'EOF'
+          obj-y += cal_data.o
+          EOF
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('drivers/soc/samsung/cal-if/acpm_dvfs.h')
+          text = p.read_text()
+          text = text.replace(
+              'static inline int exynos_acpm_set_volt_margin(unsigned int id, int volt);\n{',
+              'static inline int exynos_acpm_set_volt_margin(unsigned int id, int volt)\n{')
+          text = text.replace(
+              'static inline int exynos_acpm_set_cold_temp(unsigned int id, bool is_cold_temp);\n{',
+              'static inline int exynos_acpm_set_cold_temp(unsigned int id, bool is_cold_temp)\n{')
+          p.write_text(text)
+          PY
+
+          cat > drivers/soc/samsung/exynos8895-pmu-compat.c <<'EOF'
+          // SPDX-License-Identifier: GPL-2.0
+          #include <linux/err.h>
+          #include <linux/regmap.h>
+          #include <linux/soc/samsung/exynos-pmu.h>
+          #include <soc/samsung/exynos-pmu.h>
+
+          static struct regmap *alice_exynos8895_pmu_regmap(void)
+          {
+              static struct regmap *map;
+
+              if (!map)
+                  map = exynos_get_pmu_regmap();
+              return map;
+          }
+
+          int exynos_pmu_read(unsigned int offset, unsigned int *val)
+          {
+              struct regmap *map = alice_exynos8895_pmu_regmap();
+
+              if (IS_ERR(map))
+                  return PTR_ERR(map);
+              return regmap_read(map, offset, val);
+          }
+
+          int exynos_pmu_write(unsigned int offset, unsigned int val)
+          {
+              struct regmap *map = alice_exynos8895_pmu_regmap();
+
+              if (IS_ERR(map))
+                  return PTR_ERR(map);
+              return regmap_write(map, offset, val);
+          }
+
+          int exynos_pmu_update(unsigned int offset, unsigned int mask,
+                                unsigned int val)
+          {
+              struct regmap *map = alice_exynos8895_pmu_regmap();
+
+              if (IS_ERR(map))
+                  return PTR_ERR(map);
+              return regmap_update_bits(map, offset, mask, val);
+          }
+          EOF
+
+          printf '\nobj-y += composite.o clk-exynos8895.o\n' >> drivers/clk/samsung/Makefile
+          printf '\nobj-y += exynos8895-pmu-compat.o cal-if/\n' >> drivers/soc/samsung/Makefile
+          cat > drivers/soc/samsung/cal-if/Makefile <<'EOF'
+          obj-y += cal-if.o
+          obj-y += pmucal_system.o pmucal_local.o pmucal_cpu.o pmucal_rae.o
+          obj-y += cmucal.o ra.o vclk.o pll_spec.o
+          obj-y += exynos8895/cal_data.o
+          subdir-ccflags-y += -Wno-sizeof-pointer-div
+          EOF
+
+          {
+            echo drivers/clk/samsung/clk-exynos8895.c
+            echo drivers/clk/samsung/composite.c
+            echo drivers/clk/samsung/composite.h
+            echo drivers/soc/samsung/exynos8895-pmu-compat.c
+            echo include/linux/exynos-ss.h
+            echo include/soc/samsung/cal-if.h
+            echo include/soc/samsung/ect_parser.h
+            echo include/soc/samsung/exynos-pmu.h
+            find drivers/soc/samsung/cal-if -type f | sort
+          } > phase3b-link-imported-files.txt
+          sha256sum $(cat phase3b-link-imported-files.txt) > phase3b-link-imported-SHA256SUMS.txt
+
+      - name: Merge Phase-2 Android configuration
+        run: |
+          set -o pipefail
+          mkdir -p out-phase3b-link
+          ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            scripts/kconfig/merge_config.sh -O out-phase3b-link \
+            arch/arm64/configs/defconfig \
+            arch/arm64/configs/alice_dream2lte_4_19_phase2.config \
+            2>&1 | tee phase3b-link-config.log
+          cp out-phase3b-link/.config phase3b-link-final.config
+
+      - name: Build linked Phase-3B Image and dream2lte DTB
+        run: |
+          set +e
+          set -o pipefail
+          CAL_DEFINES='-DCONFIG_CAL_IF -DCONFIG_PMUCAL -DCONFIG_CMUCAL -DCONFIG_SOC_EXYNOS8895 -DCLK_IS_ROOT=0'
+          make O="$GITHUB_WORKSPACE/out-phase3b-link" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            KCFLAGS="$CAL_DEFINES" -j2 \
+            Image exynos/exynos8895-dream2lte_eur_open_10.dtb \
+            2>&1 | tee phase3b-link-build.log
+          status=${PIPESTATUS[0]}
+          echo "$status" > phase3b-link-exit-code.txt
+          exit 0
+
+      - name: Collect full-link evidence
+        if: always()
+        run: |
+          IMAGE=out-phase3b-link/arch/arm64/boot/Image
+          DTB=out-phase3b-link/arch/arm64/boot/dts/exynos/exynos8895-dream2lte_eur_open_10.dtb
+          if test -s "$IMAGE"; then
+            cp "$IMAGE" Image-dream2lte-4.19-phase3b-clock-link
+          fi
+          if test -s "$DTB"; then
+            cp "$DTB" exynos8895-dream2lte_eur_open_10-phase3b-clock-link.dtb
+          fi
+          : > phase3b-link-SHA256SUMS.txt
+          for f in Image-dream2lte-4.19-phase3b-clock-link \
+                   exynos8895-dream2lte_eur_open_10-phase3b-clock-link.dtb \
+                   phase3b-link-final.config; do
+            if test -s "$f"; then sha256sum "$f" >> phase3b-link-SHA256SUMS.txt; fi
+          done
+          if test -s Image-dream2lte-4.19-phase3b-clock-link; then
+            file Image-dream2lte-4.19-phase3b-clock-link | tee phase3b-link-file-identification.txt
+          fi
+          {
+            echo 'scope=host-link-gate-only'
+            echo 'kernel=4.19.325'
+            echo 'subsystem=Exynos8895 clock CAL PMUCAL'
+            echo 'cal_object_closure=verified-pass'
+            echo 'ect=disabled-header-stubs'
+            echo 'acpm_dvfs=disabled-noop-stubs'
+            echo 'exynos_snapshot=disabled-noop-interface-only'
+            echo 'compat_clk_is_root=zero'
+            echo "build_exit=$(cat phase3b-link-exit-code.txt)"
+            echo 'physical_boot=not_tested'
+          } > phase3b-link-status.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dream2lte-linux-4.19-phase3b-clock-link
+          path: |
+            Image-dream2lte-4.19-phase3b-clock-link
+            exynos8895-dream2lte_eur_open_10-phase3b-clock-link.dtb
+            phase3b-link-final.config
+            phase3b-link-config.log
+            phase3b-link-build.log
+            phase3b-link-exit-code.txt
+            phase3b-link-status.txt
+            phase3b-link-file-identification.txt
+            phase3b-link-SHA256SUMS.txt
+            phase3b-link-imported-files.txt
+            phase3b-link-imported-SHA256SUMS.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Enforce full-link result
+        run: exit "$(cat phase3b-link-exit-code.txt)"
