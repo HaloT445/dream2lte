@@ -1,4 +1,4 @@
-name: Build Android 4.19 phase 3B Exynos8895 clock link v4
+name: Build Android 4.19 phase 3B Exynos8895 clock link v5
 
 on:
   pull_request:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  clock-link-v4:
+  clock-link-v5:
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     steps:
@@ -49,6 +49,9 @@ jobs:
               'samsung_clk_alloc_reg_dump': 'exynos8895_vendor_clk_alloc_reg_dump',
               'samsung_clk_init': 'exynos8895_vendor_clk_init',
               'samsung_clk_of_add_provider': 'exynos8895_vendor_clk_of_add_provider',
+              'samsung_pll2650x_recalc_rate': 'exynos8895_vendor_pll2650x_recalc_rate',
+              'samsung_pll2650x_set_rate': 'exynos8895_vendor_pll2650x_set_rate',
+              'samsung_pll_round_rate': 'exynos8895_vendor_pll_round_rate',
           }
           for name in ('drivers/clk/samsung/composite.c',
                        'drivers/clk/samsung/composite.h'):
@@ -219,7 +222,9 @@ jobs:
             echo 'subsystem=Exynos8895 clock CAL PMUCAL'
             echo 'cal_object_closure=verified-pass'
             echo 'vendor_provider_namespace=exynos8895_vendor'
+            echo 'vendor_pll_namespace=exynos8895_vendor'
             echo 'core_samsung_clock_provider=preserved'
+            echo 'core_samsung_pll_helpers=preserved'
             echo 'ect=disabled-header-stubs'
             echo 'acpm_dvfs=disabled-noop-stubs'
             echo 'exynos_snapshot=disabled-noop-interface-only'
@@ -231,7 +236,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: dream2lte-linux-4.19-phase3b-clock-link-v4
+          name: dream2lte-linux-4.19-phase3b-clock-link-v5
           path: |
             Image-dream2lte-4.19-phase3b-clock-link
             exynos8895-dream2lte_eur_open_10-phase3b-clock-link.dtb
