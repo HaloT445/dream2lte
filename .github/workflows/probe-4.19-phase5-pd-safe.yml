@@ -1,0 +1,127 @@
+name: Probe Android 4.19 phase 5 Exynos8895 BOOT_SAFE power domains
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  pd-safe-probe:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout materialized Linux 4.19 source
+        uses: actions/checkout@v4
+        with:
+          ref: port/linux-4.19-source
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential flex gcc-aarch64-linux-gnu libelf-dev libssl-dev python3 rsync
+
+      - name: Fetch pinned Exynos8895 4.4 source
+        run: |
+          mkdir exynos8895-4.4
+          git -C exynos8895-4.4 init
+          git -C exynos8895-4.4 remote add origin https://github.com/boloaimer/exynos-8895.git
+          git -C exynos8895-4.4 fetch --depth=1 origin dcdaf6878e7f9497e1d90e25980decfa5d684f74
+          git -C exynos8895-4.4 checkout --detach FETCH_HEAD
+          test "$(git -C exynos8895-4.4 rev-parse HEAD)" = "dcdaf6878e7f9497e1d90e25980decfa5d684f74"
+
+      - name: Apply verified clock CAL and BOOT_SAFE power-domain ports
+        run: |
+          bash scripts/port/apply_exynos8895_clock_cal.sh \
+            exynos8895-4.4 phase5-clock-cal-import-SHA256SUMS.txt
+          python3 scripts/port/apply_exynos8895_clock_build_flags.py
+          python3 scripts/port/audit_exynos8895_clock_namespace.py \
+            | tee phase5-clock-namespace-audit.txt
+          python3 scripts/port/apply_exynos8895_pd_safe.py
+          grep -F 'GENPD_FLAG_ALWAYS_ON' drivers/soc/samsung/exynos8895-pd-safe.c
+          grep -F 'obj-y += exynos8895-pd-safe.o' drivers/soc/samsung/Makefile
+          sha256sum drivers/soc/samsung/exynos8895-pd-safe.c \
+            > phase5-pd-import-SHA256SUMS.txt
+
+      - name: Configure generic power domains
+        run: |
+          cat > phase5-pd-safe.config <<'EOF'
+          CONFIG_PM=y
+          CONFIG_PM_GENERIC_DOMAINS=y
+          CONFIG_PM_GENERIC_DOMAINS_OF=y
+          EOF
+          mkdir -p out-phase5-pd
+          ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            scripts/kconfig/merge_config.sh -O out-phase5-pd \
+            arch/arm64/configs/defconfig \
+            arch/arm64/configs/alice_dream2lte_4_19_phase2.config \
+            phase5-pd-safe.config \
+            2>&1 | tee phase5-pd-config.log
+          cp out-phase5-pd/.config phase5-pd-final.config
+          for sym in PM PM_GENERIC_DOMAINS PM_GENERIC_DOMAINS_OF; do
+            grep -qx "CONFIG_${sym}=y" phase5-pd-final.config
+          done
+
+      - name: Compile BOOT_SAFE power-domain closure
+        run: |
+          set +e
+          set -o pipefail
+          make O="$GITHUB_WORKSPACE/out-phase5-pd" \
+            ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- prepare scripts
+          make O="$GITHUB_WORKSPACE/out-phase5-pd" \
+            ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j2 \
+            drivers/soc/samsung/exynos8895-pd-safe.o \
+            drivers/soc/samsung/cal-if/cal-if.o \
+            drivers/soc/samsung/cal-if/pmucal_local.o \
+            drivers/soc/samsung/cal-if/pmucal_rae.o \
+            2>&1 | tee phase5-pd-build.log
+          status=${PIPESTATUS[0]}
+          echo "$status" > phase5-pd-exit-code.txt
+          exit 0
+
+      - name: Collect power-domain evidence
+        if: always()
+        run: |
+          : > phase5-pd-object-SHA256SUMS.txt
+          for obj in \
+            out-phase5-pd/drivers/soc/samsung/exynos8895-pd-safe.o \
+            out-phase5-pd/drivers/soc/samsung/cal-if/cal-if.o \
+            out-phase5-pd/drivers/soc/samsung/cal-if/pmucal_local.o \
+            out-phase5-pd/drivers/soc/samsung/cal-if/pmucal_rae.o; do
+            if test -s "$obj"; then sha256sum "$obj" >> phase5-pd-object-SHA256SUMS.txt; fi
+          done
+          {
+            echo 'scope=object-closure-gate-only'
+            echo 'kernel=4.19.325'
+            echo 'subsystem=Exynos8895 generic power domains'
+            echo 'mode=BOOT_SAFE'
+            echo 'domains_expected=15-enabled-1-disabled'
+            echo 'runtime_power_off=blocked'
+            echo 'genpd_always_on=yes'
+            echo 'cal_power_on=enabled'
+            echo "compile_exit=$(cat phase5-pd-exit-code.txt)"
+            echo 'physical_boot=not_tested'
+          } > phase5-pd-status.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dream2lte-linux-4.19-phase5-pd-safe-probe
+          path: |
+            phase5-pd-safe.config
+            phase5-pd-final.config
+            phase5-pd-config.log
+            phase5-pd-build.log
+            phase5-pd-exit-code.txt
+            phase5-pd-status.txt
+            phase5-pd-import-SHA256SUMS.txt
+            phase5-pd-object-SHA256SUMS.txt
+            phase5-clock-cal-import-SHA256SUMS.txt
+            phase5-clock-namespace-audit.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Enforce power-domain compile result
+        run: exit "$(cat phase5-pd-exit-code.txt)"
