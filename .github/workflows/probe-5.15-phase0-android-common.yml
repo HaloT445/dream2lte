@@ -14,6 +14,10 @@ on:
       - MIGRATION_5_15.md
   workflow_dispatch:
 
+concurrency:
+  group: dream2lte-5.15-phase0-baseline
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
