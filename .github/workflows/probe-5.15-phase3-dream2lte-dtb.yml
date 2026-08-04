@@ -1,12 +1,18 @@
 name: Probe Linux 5.15 phase 3 dream2lte DTB
 
 on:
-  pull_request:
-    branches: [main]
+  push:
+    branches:
+      - port/linux-5.15-bringup
     paths:
       - '.github/workflows/probe-5.15-phase3-dream2lte-dtb.yml'
       - 'scripts/port5/prepare_dream2lte_dts_probe.py'
+      - 'scripts/port5/fetch_android14_clang.sh'
   workflow_dispatch:
+
+concurrency:
+  group: dream2lte-5.15-direct-dtb
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -19,22 +25,33 @@ jobs:
       COMMON_URL: https://android.googlesource.com/kernel/common
       COMMON_REF: refs/heads/android14-5.15
       COMMON_SHA: b10e5e5b5c5e01d49829aec34b65a0d717d6f2f5
+      COMMON_TREE: 7c3cd26c765b741df608a8b81cc6b93f1240fa36
       DONOR_URL: https://github.com/boloaimer/exynos-8895.git
       DONOR_SHA: dcdaf6878e7f9497e1d90e25980decfa5d684f74
       DTB_TARGET: exynos/exynos8895-dream2lte_eur_open_10.dtb
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout coordination branch
+        uses: actions/checkout@v4
         with:
           ref: port/linux-5.15-bringup
           fetch-depth: 1
 
-      - name: Install build dependencies
+      - name: Install host dependencies
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y \
-            bc bison build-essential clang flex git libelf-dev \
-            libssl-dev lld llvm python3 rsync
+            bc bison build-essential flex git libelf-dev libssl-dev \
+            python3 rsync
+
+      - name: Fetch pinned Android 14 Clang
+        run: |
+          set -euo pipefail
+          chmod +x scripts/port5/fetch_android14_clang.sh
+          scripts/port5/fetch_android14_clang.sh \
+            "$RUNNER_TEMP/android-clang" \
+            "$RUNNER_TEMP/android-clang.env"
 
       - name: Fetch exact Linux 5.15 destination and 4.4.302 donor
         run: |
@@ -47,12 +64,16 @@ jobs:
           git -C "$DEST" fetch --depth=1 origin "$COMMON_REF"
           git -C "$DEST" checkout --detach FETCH_HEAD
           test "$(git -C "$DEST" rev-parse HEAD)" = "$COMMON_SHA"
+          test "$(git -C "$DEST" rev-parse HEAD^{tree})" = "$COMMON_TREE"
 
           git init "$DONOR"
           git -C "$DONOR" remote add origin "$DONOR_URL"
           git -C "$DONOR" fetch --depth=1 origin "$DONOR_SHA"
           git -C "$DONOR" checkout --detach FETCH_HEAD
           test "$(git -C "$DONOR" rev-parse HEAD)" = "$DONOR_SHA"
+          test "$(sed -n 's/^VERSION = //p' "$DONOR/Makefile")" = 4
+          test "$(sed -n 's/^PATCHLEVEL = //p' "$DONOR/Makefile")" = 4
+          test "$(sed -n 's/^SUBLEVEL = //p' "$DONOR/Makefile")" = 302
 
       - name: Overlay exact dream2lte DTS dependency closure
         run: |
@@ -71,16 +92,21 @@ jobs:
       - name: Configure Android Common 5.15 for Exynos DTB
         run: |
           set -euo pipefail
+          source "$RUNNER_TEMP/android-clang.env"
+          export PATH="$ANDROID_CLANG_BIN:$PATH"
           DEST="$RUNNER_TEMP/android-common-5.15"
           OUT="$RUNNER_TEMP/out-5.15-dtb"
+
           make -C "$DEST" O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
-            gki_defconfig 2>&1 | tee dtb-evidence/DTB_CONFIG.log
+            KCFLAGS=-D__ANDROID_COMMON_KERNEL__ gki_defconfig \
+            2>&1 | tee dtb-evidence/DTB_CONFIG.log
           "$DEST/scripts/config" --file "$OUT/.config" \
             -e ARCH_EXYNOS \
             -e OF \
             -e OF_EARLY_FLATTREE
           make -C "$DEST" O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
-            olddefconfig 2>&1 | tee -a dtb-evidence/DTB_CONFIG.log
+            KCFLAGS=-D__ANDROID_COMMON_KERNEL__ olddefconfig \
+            2>&1 | tee -a dtb-evidence/DTB_CONFIG.log
           cp "$OUT/.config" dtb-evidence/DTB_FINAL.config
           grep -qx 'CONFIG_ARCH_EXYNOS=y' dtb-evidence/DTB_FINAL.config
 
@@ -88,10 +114,13 @@ jobs:
         run: |
           set +e
           set -o pipefail
+          source "$RUNNER_TEMP/android-clang.env"
+          export PATH="$ANDROID_CLANG_BIN:$PATH"
           DEST="$RUNNER_TEMP/android-common-5.15"
           OUT="$RUNNER_TEMP/out-5.15-dtb"
           make -C "$DEST" O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
-            -j2 "$DTB_TARGET" 2>&1 | tee dtb-evidence/DTB_BUILD.log
+            KCFLAGS=-D__ANDROID_COMMON_KERNEL__ -j2 "$DTB_TARGET" \
+            2>&1 | tee dtb-evidence/DTB_BUILD.log
           status=${PIPESTATUS[0]}
           echo "$status" > dtb-evidence/DTB_EXIT_CODE.txt
           exit 0
@@ -111,10 +140,11 @@ jobs:
               > dtb-evidence/DTB_FILE.txt
           fi
           {
-            cat dtb-evidence/DTS_PROBE_STATUS.txt
+            cat dtb-evidence/DTS_PROBE_STATUS.txt 2>/dev/null || true
             echo "compile_exit=$(cat dtb-evidence/DTB_EXIT_CODE.txt 2>/dev/null || echo missing)"
             echo 'runtime_driver_support=not_tested'
             echo 'physical_boot=not_tested'
+            echo 'one_ui_8=not_tested'
           } > dtb-evidence/DTB_RESULT.txt
 
       - name: Upload DTB probe evidence
