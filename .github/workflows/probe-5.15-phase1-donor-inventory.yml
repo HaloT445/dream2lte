@@ -9,6 +9,10 @@ on:
       - scripts/port5/inventory_4_4_donor.py
   workflow_dispatch:
 
+concurrency:
+  group: dream2lte-5.15-donor-inventory
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
