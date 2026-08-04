@@ -1,0 +1,187 @@
+name: Materialize Android Common 5.15 with pinned toolchain
+
+on:
+  push:
+    branches:
+      - port/linux-5.15-bringup
+    paths:
+      - .github/workflows/materialize-5.15-pinned-toolchain.yml
+      - scripts/port5/fetch_android14_clang.sh
+  workflow_dispatch:
+
+concurrency:
+  group: dream2lte-materialize-5.15-pinned
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  materialize-source:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+    env:
+      COMMON_URL: https://android.googlesource.com/kernel/common
+      COMMON_REF: refs/heads/android14-5.15
+      COMMON_SHA: b10e5e5b5c5e01d49829aec34b65a0d717d6f2f5
+      COMMON_TREE: 7c3cd26c765b741df608a8b81cc6b93f1240fa36
+      TARGET_BRANCH: port/linux-5.15-source
+
+    steps:
+      - name: Checkout coordination branch
+        uses: actions/checkout@v4
+        with:
+          ref: port/linux-5.15-bringup
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Install host dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential dwarves flex git libelf-dev \
+            libssl-dev python3 rsync
+
+      - name: Fetch pinned Android 14 Clang
+        run: |
+          set -euo pipefail
+          chmod +x scripts/port5/fetch_android14_clang.sh
+          scripts/port5/fetch_android14_clang.sh \
+            "$RUNNER_TEMP/android-clang" \
+            "$RUNNER_TEMP/android-clang.env"
+
+      - name: Fetch exact Android Common source
+        run: |
+          set -euo pipefail
+          COMMON="$RUNNER_TEMP/android-common-5.15"
+          git init "$COMMON"
+          git -C "$COMMON" remote add origin "$COMMON_URL"
+          git -C "$COMMON" fetch --depth=1 origin "$COMMON_REF"
+          git -C "$COMMON" checkout --detach FETCH_HEAD
+          test "$(git -C "$COMMON" rev-parse HEAD)" = "$COMMON_SHA"
+          test "$(git -C "$COMMON" rev-parse HEAD^{tree})" = "$COMMON_TREE"
+          test "$(sed -n 's/^VERSION = //p' "$COMMON/Makefile")" = 5
+          test "$(sed -n 's/^PATCHLEVEL = //p' "$COMMON/Makefile")" = 15
+          test -f "$COMMON/arch/arm64/configs/gki_defconfig"
+          test -f "$COMMON/build.config.gki.aarch64"
+
+      - name: Build clean arm64 GKI Image
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/android-clang.env"
+          export PATH="$ANDROID_CLANG_BIN:$PATH"
+          COMMON="$RUNNER_TEMP/android-common-5.15"
+          OUT="$RUNNER_TEMP/out-5.15-materialize"
+          EVIDENCE="$RUNNER_TEMP/materialize-evidence"
+          mkdir -p "$EVIDENCE"
+
+          make -C "$COMMON" O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            KCFLAGS=-D__ANDROID_COMMON_KERNEL__ gki_defconfig \
+            2>&1 | tee "$EVIDENCE/configure.log"
+          cp "$OUT/.config" "$EVIDENCE/gki-final.config"
+
+          make -C "$COMMON" O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            KCFLAGS=-D__ANDROID_COMMON_KERNEL__ -j2 Image \
+            2>&1 | tee "$EVIDENCE/build.log"
+
+          IMAGE="$OUT/arch/arm64/boot/Image"
+          test -s "$IMAGE"
+          cp "$IMAGE" "$EVIDENCE/Image-android-common-5.15-clean"
+          sha256sum \
+            "$EVIDENCE/Image-android-common-5.15-clean" \
+            "$EVIDENCE/gki-final.config" \
+            > "$EVIDENCE/SHA256SUMS.txt"
+          file "$EVIDENCE/Image-android-common-5.15-clean" \
+            > "$EVIDENCE/FILE.txt"
+          {
+            cat "$RUNNER_TEMP/android-clang.env"
+            echo "source_commit=$COMMON_SHA"
+            echo "source_tree=$COMMON_TREE"
+            echo 'migration=direct-4.4.302-to-5.15'
+            echo 'linux_4_19_dependency=none'
+            echo 'clean_gki_image=pass'
+            echo 'exynos8895_imported=no'
+            echo 'physical_boot=not_tested'
+            echo 'one_ui_8=not_tested'
+          } > "$EVIDENCE/STATUS.txt"
+
+      - name: Prepare isolated target worktree
+        run: |
+          set -euo pipefail
+          TARGET="$RUNNER_TEMP/linux-5.15-source-worktree"
+          git fetch origin "$TARGET_BRANCH"
+          git worktree add -B "$TARGET_BRANCH" \
+            "$TARGET" "origin/$TARGET_BRANCH"
+          test "$(git -C "$TARGET" branch --show-current)" = "$TARGET_BRANCH"
+
+      - name: Replace target with exact source tree
+        run: |
+          set -euo pipefail
+          COMMON="$RUNNER_TEMP/android-common-5.15"
+          TARGET="$RUNNER_TEMP/linux-5.15-source-worktree"
+          EVIDENCE="$RUNNER_TEMP/materialize-evidence"
+
+          find "$TARGET" -mindepth 1 -maxdepth 1 \
+            ! -name .git -exec rm -rf -- {} +
+          rsync -a --delete --exclude=.git/ "$COMMON/" "$TARGET/"
+
+          mkdir -p "$TARGET/evidence" "$TARGET/scripts/port5"
+          cp "$EVIDENCE/SHA256SUMS.txt" \
+            "$TARGET/evidence/PHASE0_5_15_SHA256SUMS.txt"
+          cp "$EVIDENCE/FILE.txt" \
+            "$TARGET/evidence/PHASE0_5_15_FILE.txt"
+          cp "$EVIDENCE/STATUS.txt" \
+            "$TARGET/evidence/PHASE0_5_15_STATUS.txt"
+
+          cat > "$TARGET/ALICE_DREAM2LTE_5_15_BASELINE.md" <<EOF
+          # ALice dream2lte Android Common Linux 5.15 baseline
+
+          - Destination: Android Common Linux 5.15
+          - Branch: android14-5.15
+          - Commit: $COMMON_SHA
+          - Tree: $COMMON_TREE
+          - Config: gki_defconfig
+          - Clean arm64 Image: PASS
+          - Device donor for later phases: Linux 4.4.302
+          - Linux 4.19 dependency: none
+          - Exynos8895 device code imported: no
+          - KernelSU/SUSFS/OC: disabled and not imported
+          - Physical boot: not tested
+          - One UI 8: not tested
+
+          This is a clean source baseline, not a flashable dream2lte kernel.
+          EOF
+
+          test "$(sed -n 's/^VERSION = //p' "$TARGET/Makefile")" = 5
+          test "$(sed -n 's/^PATCHLEVEL = //p' "$TARGET/Makefile")" = 15
+          test -f "$TARGET/arch/arm64/configs/gki_defconfig"
+          test -f "$TARGET/drivers/android/binder.c"
+
+      - name: Audit and push source branch
+        run: |
+          set -euo pipefail
+          TARGET="$RUNNER_TEMP/linux-5.15-source-worktree"
+
+          if find "$TARGET" -path "$TARGET/.git" -prune -o \
+            -type f -size +95M -print | grep -q .; then
+            echo 'A source file exceeds the safe GitHub size threshold' >&2
+            exit 1
+          fi
+
+          git -C "$TARGET" config user.name "ALice CI"
+          git -C "$TARGET" config user.email "halot4004@gmail.com"
+          git -C "$TARGET" add -A
+          git -C "$TARGET" diff --cached --check
+          git -C "$TARGET" commit -m \
+            "Import Android Common 5.15 baseline b10e5e5b5c5e"
+          git -C "$TARGET" push origin HEAD:"$TARGET_BRANCH"
+
+      - name: Upload baseline evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dream2lte-android-common-5.15-pinned-baseline
+          path: ${{ runner.temp }}/materialize-evidence/
+          if-no-files-found: warn
+          retention-days: 30
