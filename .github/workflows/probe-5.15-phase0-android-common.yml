@@ -1,0 +1,203 @@
+name: Probe Linux 5.15 phase 0 Android Common baseline
+
+on:
+  push:
+    branches:
+      - port/linux-5.15-bringup
+    paths:
+      - .github/workflows/probe-5.15-phase0-android-common.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android-common-5-15:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout coordination branch
+        uses: actions/checkout@v4
+        with:
+          ref: port/linux-5.15-bringup
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential clang dwarves flex git libelf-dev \
+            libssl-dev lld llvm python3 rsync
+
+      - name: Discover highest official Android Common 5.15 branch
+        env:
+          COMMON_URL: https://android.googlesource.com/kernel/common
+        run: |
+          set -euo pipefail
+          git ls-remote --heads "$COMMON_URL" 'refs/heads/android*-5.15' \
+            | tee android-common-5.15-refs.txt
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          refs = []
+          for line in Path('android-common-5.15-refs.txt').read_text().splitlines():
+              if not line.strip():
+                  continue
+              sha, ref = line.split()
+              match = re.fullmatch(r'refs/heads/android(\d+)-5\.15', ref)
+              if match:
+                  refs.append((int(match.group(1)), ref, sha))
+
+          if not refs:
+              raise SystemExit('No canonical official Android Common androidN-5.15 branch found')
+
+          version, ref, sha = sorted(refs, reverse=True)[0]
+          branch = ref.removeprefix('refs/heads/')
+          Path('android-common-selected.env').write_text(
+              f'ANDROID_COMMON_VERSION={version}\n'
+              f'ANDROID_COMMON_BRANCH={branch}\n'
+              f'ANDROID_COMMON_REF={ref}\n'
+              f'ANDROID_COMMON_SHA={sha}\n'
+          )
+          Path('android-common-selection.txt').write_text(
+              'source=https://android.googlesource.com/kernel/common\n'
+              f'branch={branch}\n'
+              f'ref={ref}\n'
+              f'commit={sha}\n'
+              'selection=highest-canonical-androidN-5.15-branch\n'
+          )
+          print(Path('android-common-selection.txt').read_text())
+          PY
+
+      - name: Fetch exact selected Android Common commit
+        env:
+          COMMON_URL: https://android.googlesource.com/kernel/common
+        run: |
+          set -euo pipefail
+          source android-common-selected.env
+          mkdir android-common-5.15
+          git -C android-common-5.15 init
+          git -C android-common-5.15 remote add origin "$COMMON_URL"
+          git -C android-common-5.15 fetch --depth=1 origin "$ANDROID_COMMON_REF"
+          git -C android-common-5.15 checkout --detach FETCH_HEAD
+          test "$(git -C android-common-5.15 rev-parse HEAD)" = "$ANDROID_COMMON_SHA"
+          git -C android-common-5.15 rev-parse HEAD^{tree} \
+            | tee android-common-source-tree.txt
+
+      - name: Audit Android and kernel baseline
+        run: |
+          set -euo pipefail
+          cd android-common-5.15
+          test "$(sed -n 's/^VERSION = //p' Makefile)" = "5"
+          test "$(sed -n 's/^PATCHLEVEL = //p' Makefile)" = "15"
+          test -f arch/arm64/configs/gki_defconfig
+          test -f drivers/android/binder.c
+          test -d fs/erofs
+          test -d fs/incfs
+
+          {
+            echo 'kernel_family=5.15'
+            echo 'architecture=arm64'
+            echo 'gki_defconfig=yes'
+            echo 'binder_driver=yes'
+            echo 'erofs=yes'
+            echo 'incremental_fs=yes'
+            if test -d include/trace/hooks || test -f drivers/android/vendor_hooks.c; then
+              echo 'android_vendor_hooks=yes'
+            else
+              echo 'android_vendor_hooks=no'
+            fi
+            if test -f build.config.gki.aarch64; then
+              echo 'android_build_config_gki=yes'
+            else
+              echo 'android_build_config_gki=no'
+            fi
+          } > ../phase0-baseline-audit.txt
+
+      - name: Configure clean arm64 GKI baseline
+        run: |
+          set -euo pipefail
+          make -C android-common-5.15 \
+            O="$GITHUB_WORKSPACE/out-5.15-phase0" \
+            ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            gki_defconfig \
+            2>&1 | tee phase0-config.log
+          cp out-5.15-phase0/.config phase0-gki-final.config
+
+          for symbol in \
+            CONFIG_64BIT=y \
+            CONFIG_ARM64=y \
+            CONFIG_ANDROID_BINDER_IPC=y; do
+            grep -qx "$symbol" phase0-gki-final.config
+          done
+
+      - name: Build clean Android Common 5.15 Image
+        run: |
+          set +e
+          set -o pipefail
+          make -C android-common-5.15 \
+            O="$GITHUB_WORKSPACE/out-5.15-phase0" \
+            ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            -j2 Image \
+            2>&1 | tee phase0-build.log
+          status=${PIPESTATUS[0]}
+          echo "$status" > phase0-build-exit-code.txt
+          exit 0
+
+      - name: Collect Phase-0 evidence
+        if: always()
+        run: |
+          set -u
+          IMAGE=out-5.15-phase0/arch/arm64/boot/Image
+          : > phase0-SHA256SUMS.txt
+          if test -s "$IMAGE"; then
+            cp "$IMAGE" Image-android-common-5.15-phase0
+            sha256sum Image-android-common-5.15-phase0 \
+              >> phase0-SHA256SUMS.txt
+            file Image-android-common-5.15-phase0 \
+              | tee phase0-file-identification.txt
+          fi
+          if test -s phase0-gki-final.config; then
+            sha256sum phase0-gki-final.config >> phase0-SHA256SUMS.txt
+          fi
+
+          {
+            cat android-common-selection.txt
+            echo 'scope=clean-android-common-baseline-only'
+            echo 'device=dream2lte-not-yet-ported'
+            echo 'vendor_4_4_code_imported=no'
+            echo 'kernel_su=disabled-not-imported'
+            echo 'susfs=disabled-not-imported'
+            echo 'overclock=disabled-not-imported'
+            echo "build_exit=$(cat phase0-build-exit-code.txt 2>/dev/null || echo missing)"
+            echo 'physical_boot=not_tested'
+            echo 'one_ui_8=not_tested'
+          } > phase0-status.txt
+
+      - name: Upload Phase-0 evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dream2lte-linux-5.15-phase0-android-common
+          path: |
+            Image-android-common-5.15-phase0
+            android-common-5.15-refs.txt
+            android-common-selected.env
+            android-common-selection.txt
+            android-common-source-tree.txt
+            phase0-baseline-audit.txt
+            phase0-gki-final.config
+            phase0-config.log
+            phase0-build.log
+            phase0-build-exit-code.txt
+            phase0-file-identification.txt
+            phase0-SHA256SUMS.txt
+            phase0-status.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce clean baseline build result
+        run: exit "$(cat phase0-build-exit-code.txt)"
