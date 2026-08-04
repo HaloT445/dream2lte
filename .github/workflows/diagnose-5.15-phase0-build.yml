@@ -6,11 +6,13 @@ on:
       - port/linux-5.15-bringup
     paths:
       - .github/workflows/diagnose-5.15-phase0-build.yml
+      - scripts/port5/fetch_android14_clang.sh
   pull_request:
     branches:
       - main
     paths:
       - .github/workflows/diagnose-5.15-phase0-build.yml
+      - scripts/port5/fetch_android14_clang.sh
   workflow_dispatch:
 
 concurrency:
@@ -41,13 +43,21 @@ jobs:
           fetch-depth: 1
           persist-credentials: true
 
-      - name: Install build dependencies
+      - name: Install host dependencies
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y \
-            bc bison build-essential clang dwarves flex git libelf-dev \
-            libssl-dev lld llvm python3 rsync
+            bc bison build-essential dwarves flex git libelf-dev \
+            libssl-dev python3 rsync
+
+      - name: Fetch pinned Android 14 Clang
+        run: |
+          set -euo pipefail
+          chmod +x scripts/port5/fetch_android14_clang.sh
+          scripts/port5/fetch_android14_clang.sh \
+            "$RUNNER_TEMP/android-clang" \
+            "$RUNNER_TEMP/android-clang.env"
 
       - name: Fetch exact Android Common source
         run: |
@@ -62,14 +72,18 @@ jobs:
           test "$(sed -n 's/^VERSION = //p' "$COMMON/Makefile")" = 5
           test "$(sed -n 's/^PATCHLEVEL = //p' "$COMMON/Makefile")" = 15
 
-      - name: Configure and capture full build log
+      - name: Configure and capture build result
         run: |
           set -u
+          source "$RUNNER_TEMP/android-clang.env"
+          export PATH="$ANDROID_CLANG_BIN:$PATH"
           COMMON="$RUNNER_TEMP/android-common-5.15"
           OUT="$RUNNER_TEMP/out-5.15-diagnostic"
+          FULL_LOG="$RUNNER_TEMP/phase0-build.log"
           mkdir -p "$EVIDENCE_DIR"
 
           {
+            cat "$RUNNER_TEMP/android-clang.env"
             echo "source_url=$COMMON_URL"
             echo "source_ref=$COMMON_REF"
             echo "source_commit=$COMMON_SHA"
@@ -77,32 +91,33 @@ jobs:
             echo "runner=$(uname -a)"
             echo "clang=$(clang --version | head -n1)"
             echo "ld_lld=$(ld.lld --version | head -n1)"
-            echo "llvm_ar=$(llvm-ar --version | head -n1)"
+            echo "pahole=$(pahole --version 2>&1 | head -n1)"
             echo "make=$(make --version | head -n1)"
-            echo "python=$(python3 --version)"
           } > "$EVIDENCE_DIR/environment.txt"
 
           set +e
           set -o pipefail
           make -C "$COMMON" O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
-            gki_defconfig 2>&1 | tee "$EVIDENCE_DIR/configure.log"
+            KCFLAGS=-D__ANDROID_COMMON_KERNEL__ gki_defconfig \
+            2>&1 | tee "$EVIDENCE_DIR/configure.log"
           config_status=${PIPESTATUS[0]}
 
           if [ "$config_status" -eq 0 ]; then
             cp "$OUT/.config" "$EVIDENCE_DIR/gki-final.config"
             make -C "$COMMON" O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
-              -j2 V=1 Image 2>&1 | tee "$EVIDENCE_DIR/build.log"
+              KCFLAGS=-D__ANDROID_COMMON_KERNEL__ -j2 V=1 Image \
+              2>&1 | tee "$FULL_LOG"
             build_status=${PIPESTATUS[0]}
           else
             build_status=125
-            : > "$EVIDENCE_DIR/build.log"
+            : > "$FULL_LOG"
           fi
           set -e
 
           printf '%s\n' "$config_status" > "$EVIDENCE_DIR/configure-exit-code.txt"
           printf '%s\n' "$build_status" > "$EVIDENCE_DIR/build-exit-code.txt"
 
-          python3 - "$EVIDENCE_DIR/build.log" "$EVIDENCE_DIR/first-errors.txt" <<'PY'
+          python3 - "$FULL_LOG" "$EVIDENCE_DIR/first-errors.txt" <<'PY'
           from pathlib import Path
           import re
           import sys
@@ -111,24 +126,25 @@ jobs:
           output = Path(sys.argv[2])
           lines = source.read_text(errors="replace").splitlines()
           pattern = re.compile(
-              r"(?:^|\s)(?:error:|fatal error:|FAILED:|undefined reference|"
-              r"No rule to make target|not found|cannot find|Killed)(?:\s|$)",
+              r"(?:error:|fatal error:|FAILED:|undefined reference|"
+              r"No rule to make target|not found|cannot find|Killed)",
               re.IGNORECASE,
           )
-          hits = [index for index, line in enumerate(lines) if pattern.search(line)]
-          selected: list[str] = []
-          seen: set[int] = set()
+          hits = [i for i, line in enumerate(lines) if pattern.search(line)]
+          selected = []
+          seen = set()
           for index in hits[:40]:
               for current in range(max(0, index - 4), min(len(lines), index + 8)):
                   if current not in seen:
                       selected.append(f"{current + 1}: {lines[current]}")
                       seen.add(current)
           if not selected:
-              selected = [f"{i + 1}: {line}" for i, line in enumerate(lines[-300:], max(0, len(lines) - 300))]
+              start = max(0, len(lines) - 300)
+              selected = [f"{i + 1}: {lines[i]}" for i in range(start, len(lines))]
           output.write_text("\n".join(selected) + "\n")
           PY
 
-          tail -n 400 "$EVIDENCE_DIR/build.log" > "$EVIDENCE_DIR/build-tail.txt" || true
+          tail -n 400 "$FULL_LOG" > "$EVIDENCE_DIR/build-tail.txt" || true
 
           IMAGE="$OUT/arch/arm64/boot/Image"
           {
@@ -149,20 +165,20 @@ jobs:
           } > "$EVIDENCE_DIR/status.txt"
 
           if [ -s "$EVIDENCE_DIR/gki-final.config" ]; then
-            sha256sum "$EVIDENCE_DIR/gki-final.config" > "$EVIDENCE_DIR/config-SHA256.txt"
+            sha256sum "$EVIDENCE_DIR/gki-final.config" \
+              > "$EVIDENCE_DIR/config-SHA256.txt"
           fi
 
       - name: Commit compact diagnostics
         run: |
           set -euo pipefail
-          rm -f "$EVIDENCE_DIR/build.log"
           git config user.name "ALice CI"
           git config user.email "halot4004@gmail.com"
           git add "$EVIDENCE_DIR"
           if git diff --cached --quiet; then
             echo 'No diagnostic changes to commit'
           else
-            git commit -m "evidence: capture Android Common 5.15 baseline build"
+            git commit -m "evidence: capture pinned-clang 5.15 build"
             git push origin HEAD:port/linux-5.15-bringup
           fi
 
@@ -171,6 +187,8 @@ jobs:
         if: always()
         with:
           name: dream2lte-linux-5.15-phase0-diagnostics
-          path: evidence/diagnostics/phase0-5.15/
+          path: |
+            evidence/diagnostics/phase0-5.15/
+            ${{ runner.temp }}/phase0-build.log
           if-no-files-found: error
           retention-days: 14
