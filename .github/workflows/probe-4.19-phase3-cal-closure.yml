@@ -55,6 +55,9 @@ jobs:
           cp exynos8895-4.4/include/soc/samsung/exynos-pmu.h include/soc/samsung/
           rm -rf drivers/soc/samsung/cal-if
           cp -a exynos8895-4.4/drivers/soc/samsung/cal-if drivers/soc/samsung/
+          cat > drivers/soc/samsung/cal-if/exynos8895/Makefile <<'EOF'
+          obj-y += cal_data.o
+          EOF
 
           python3 - <<'PY'
           from pathlib import Path
