@@ -1,8 +1,6 @@
 name: Probe Android 4.19 phase 3 CAL closure
 
 on:
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
