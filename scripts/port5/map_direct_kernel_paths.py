@@ -44,7 +44,17 @@ SPECS = (
     Spec("exynos8895_dt_bindings", "donor-4.4.302", "port-bindings-selectively", ("include/dt-bindings/**/*8895*",), True),
     Spec("exynos8895_clock", "donor-4.4.302", "port-data-and-glue-only", ("drivers/clk/samsung/**/*8895*",), True),
     Spec("exynos8895_cal", "donor-4.4.302", "port-minimum-boot-closure", ("drivers/soc/samsung/cal-if/**/*", "drivers/soc/samsung/**/*cal*8895*")),
-    Spec("exynos8895_pinctrl", "donor-4.4.302", "port-bank-tables-only", ("drivers/pinctrl/samsung/**/*8895*", "drivers/pinctrl/**/*8895*"), True),
+    Spec(
+        "exynos8895_pinctrl",
+        "donor-4.4.302",
+        "extract-8895-bank-tables-from-shared-pinctrl-exynos.c",
+        (
+            "drivers/pinctrl/samsung/pinctrl-exynos.c",
+            "drivers/pinctrl/samsung/pinctrl-samsung.c",
+            "drivers/pinctrl/samsung/pinctrl-samsung.h",
+        ),
+        True,
+    ),
     Spec("exynos8895_power_domains", "donor-4.4.302", "port-domain-list-boot-safe-always-on", ("arch/arm64/boot/dts/**/*pm-domain*", "drivers/soc/samsung/**/*pd*", "drivers/pmdomain/**/*8895*")),
     Spec("exynos8895_ufs_host", "donor-4.4.302", "reference-registers-resources-calibration-not-core", ("drivers/scsi/ufs/**/*exynos*", "drivers/ufs/**/*exynos*"), True),
     Spec("exynos8895_ufs_phy", "donor-4.4.302", "reference-calibration-only", ("drivers/phy/**/*ufs*",), True),
