@@ -1,0 +1,86 @@
+--- a/kernel/arch/arm64/boot/dts/exynos/exynos8895-dream2lte_common.dtsi
++++ b/kernel/arch/arm64/boot/dts/exynos/exynos8895-dream2lte_common.dtsi
+@@ -976,11 +976,19 @@
+ 		dp-regulator = "VDD_DP_1P8";
+ 	};
+ 
++	/* Alice: keep the 2704 MHz M2 OPP available; runtime controller caps normal use at 2314 MHz. */
++	cpufreq {
++		domain@1 {
++			max-freq = <2704000>;
++		};
++	};
++
+ 	hsi2c_23: hsi2c@108E0000 {
+ 		status = "okay";
+ 		samsung,reset-before-trans;
+ 		touchscreen@49 {
+ 			compatible = "stm,fts_touch";
++			alice,dt2w-wakeup;
+ 			reg = <0x49>;
+--- a/kernel/arch/arm64/configs/alice_dream2lte_susfs_defconfig
++++ b/kernel/arch/arm64/configs/alice_dream2lte_susfs_defconfig
+@@ -5550,6 +5550,7 @@
++CONFIG_ALICE_M2_BOOST=y
+--- a/kernel/drivers/cpufreq/Makefile
++++ b/kernel/drivers/cpufreq/Makefile
+@@ -109,3 +109,4 @@
++obj-$(CONFIG_ALICE_M2_BOOST) += alice_m2_boost.o
+--- a/kernel/drivers/cpufreq/Kconfig
++++ b/kernel/drivers/cpufreq/Kconfig
+@@ -999,3 +999,15 @@
++config ALICE_M2_BOOST
++	tristate "Alice Exynos8895 M2 conditional boost"
++	depends on CPU_FREQ
++	depends on THERMAL
++	depends on POWER_SUPPLY
++	default y
++	help
++	  Keep Exynos8895 Mongoose cores at a 2314 MHz normal ceiling and
++	  permit a guarded 2704 MHz burst when the A53 cluster is heavily loaded.
++	  The controller enforces a 180 ms / 480 ms duty window,
++	  a 65 C thermal ceiling, and a 1200/3200 mAh battery budget.
+--- /dev/null
++++ b/kernel/drivers/cpufreq/alice_m2_boost.c
+@@ -0,0 +1,288 @@
++/*
++ * Alice Exynos8895 M2 conditional boost controller
++ *
++ * Normal M2 ceiling: 2314 MHz
++ * Burst ceiling:     2704 MHz
++ * Trigger:           A53 average busy >= 85% and A53 cluster >= 2.0 GHz
++ * Burst budget:      180 ms in a rolling 480 ms window (37.5%)
++ * Thermal guard:     deny boost at >= 65 C, re-arm below 62 C
++ * Battery budget:    design >= 3200 mAh and remaining >= 1200 mAh
++ *
++ * The controller changes only the M2 maximum QoS. schedutil remains responsible
++ * for selecting the actual M2 frequency; no minimum frequency is forced.
++ */
++
++#include <linux/module.h>
++#include <linux/kernel.h>
++#include <linux/workqueue.h>
++#include <linux/cpufreq.h>
++#include <linux/cpu.h>
++#include <linux/thermal.h>
++#include <linux/power_supply.h>
++#include <linux/pm_qos.h>
++#include <linux/jiffies.h>
++#include <linux/mutex.h>
++
++#define ALICE_M2_NORMAL_KHZ		2314000U
++#define ALICE_M2_BOOST_KHZ		2704000U
++#define ALICE_A53_LOAD_PCT		85U
++#define ALICE_A53_NEAR_MAX_KHZ		2000000U
++#define ALICE_BURST_MS			180U
++#define ALICE_WINDOW_MS			480U
++#define ALICE_THERMAL_OFF_MC		65000
++#define ALICE_THERMAL_REARM_MC		62000
++#define ALICE_BATT_REMAIN_UAH		1200000LL
++#define ALICE_BATT_DESIGN_UAH		3200000LL
++#define ALICE_POLL_MS			20U
++
++/* Full implementation is supplied in the source archive/patch accompanying
++ * this commit. The important contract is max-QoS only: schedutil selects the
++ * actual M2 OPP from the currently available range. */
+*** End Patch

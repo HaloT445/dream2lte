@@ -1,0 +1,81 @@
+name: ALice dream2lte 4.4.302 - Clang 17 build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'kernel/**'
+      - 'patches/**'
+      - '.github/workflows/build-alice-clang17.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Clang 17 and build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget ca-certificates bc bison build-essential cpio flex git libelf-dev libssl-dev lz4 python3 rsync xz-utils zip curl
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 17
+          clang-17 --version
+          ld.lld-17 --version
+
+      - name: Install Arm GNU toolchain for Clang external assembler
+        run: |
+          curl -L --retry 5 --retry-delay 3 -o arm-gnu.tar.xz \
+            https://developer.arm.com/-/media/Files/downloads/gnu/13.3.rel1/binrel/arm-gnu-toolchain-13.3.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
+          tar -xf arm-gnu.tar.xz
+          GCC_PATH="$(find "$PWD" -type f -name aarch64-none-linux-gnu-gcc -print -quit)"
+          test -n "$GCC_PATH"
+          echo "$(dirname "$GCC_PATH")" >> "$GITHUB_PATH"
+          "$GCC_PATH" --version
+
+      - name: Verify locked ALice profile
+        run: |
+          test -f kernel/Makefile
+          test -f kernel/arch/arm64/configs/alice_dream2lte_susfs_defconfig
+          grep -q '^CONFIG_SCHED_HMP=y' kernel/arch/arm64/configs/alice_dream2lte_susfs_defconfig
+          grep -q '^CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y' kernel/arch/arm64/configs/alice_dream2lte_susfs_defconfig
+          grep -q '^CONFIG_ALICE_M2_BOOST=y' kernel/arch/arm64/configs/alice_dream2lte_susfs_defconfig
+          grep -q 'ALICE_A53_NEAR_MAX_KHZ.*2000000U' kernel/drivers/cpufreq/alice_m2_boost.c
+          grep -q 'ALICE_M2_BOOST_KHZ.*2704000U' kernel/drivers/cpufreq/alice_m2_boost.c
+          grep -q 'ALICE_M2_NORMAL_KHZ.*2314000U' kernel/drivers/cpufreq/alice_m2_boost.c
+          grep -q 'ALICE_BURST_MS.*180U' kernel/drivers/cpufreq/alice_m2_boost.c
+          grep -q 'ALICE_WINDOW_MS.*480U' kernel/drivers/cpufreq/alice_m2_boost.c
+          grep -q 'PM_QOS_CLUSTER1_FREQ_MAX' kernel/drivers/cpufreq/alice_m2_boost.c
+
+      - name: Build with Clang 17
+        env:
+          ARCH: arm64
+          CROSS_COMPILE: aarch64-none-linux-gnu-
+          CLANG_TRIPLE: aarch64-none-linux-gnu-
+          CC: clang-17
+          LD: ld.lld-17
+          AR: llvm-ar-17
+          NM: llvm-nm-17
+          OBJCOPY: llvm-objcopy-17
+          OBJDUMP: llvm-objdump-17
+          STRIP: llvm-strip-17
+        run: |
+          make -C kernel O="$PWD/out" alice_dream2lte_susfs_defconfig
+          make -C kernel O="$PWD/out" -j"$(nproc)" Image
+          make -C kernel O="$PWD/out" -j"$(nproc)" dtbs
+          test -s out/arch/arm64/boot/Image
+          sha256sum out/arch/arm64/boot/Image > SHA256SUMS.txt
+
+      - name: Upload kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ALice-dream2lte-clang17-4.4.302
+          path: |
+            out/arch/arm64/boot/Image
+            out/arch/arm64/boot/dts/**/*.dtb
+            SHA256SUMS.txt
