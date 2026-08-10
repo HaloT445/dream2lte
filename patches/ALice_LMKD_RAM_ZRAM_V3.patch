@@ -1,0 +1,13 @@
+# ALice V3 memory-management change
+
+Target: dream2lte / Exynos 8895 / Linux 4.4.302
+
+- Disable kernel Android Low Memory Killer:
+  CONFIG_ANDROID_LOW_MEMORY_KILLER=n
+  CONFIG_ANDROID_LOW_MEMORY_KILLER_AUTODETECT_OOM_ADJ_VALUES=n
+- Keep CONFIG_ZRAM=y, CONFIG_ZSMALLOC=y and CONFIG_SWAP=y.
+- Android userspace lmkd is the intended process-kill manager.
+- Do not wait for zRAM to be 100% full; Linux reclaim/swap and lmkd pressure policy operate continuously.
+- Exact RAM->zRAM thresholds are controlled by Android init/userspace and lmkd.
+
+A full kernel Image rebuild is required before these settings are present in a boot image.
