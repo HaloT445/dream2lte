@@ -1,0 +1,32 @@
+# ALice S8+ dream2lte V2 M2 policy
+#
+# M2 normal ceiling: 2400 MHz
+# M2 boost ceiling: 2704 MHz
+# Trigger: A53 average load >= 85% AND all A53 CPUs >= 2000 MHz
+# schedutil remains responsible for selecting the actual M2 OPP.
+# No M2 minimum frequency is forced.
+# Burst: 180 ms within a 480 ms rolling window (37.5% duty)
+# Thermal: deny boost at >= 65 C; re-arm below 62 C
+# Battery: require design capacity >= 3200 mAh and remaining >= 1200 mAh
+
+--- a/kernel/drivers/cpufreq/alice_m2_boost.c
++++ b/kernel/drivers/cpufreq/alice_m2_boost.c
+@@
+-#define ALICE_M2_NORMAL_KHZ		2314000U
++#define ALICE_M2_NORMAL_KHZ		2400000U
+ #define ALICE_M2_BOOST_KHZ		2704000U
+@@
+- * Normal M2 ceiling: 2314 MHz
++ * Normal M2 ceiling: 2400 MHz
+  * Burst ceiling:     2704 MHz
+@@
+--- a/kernel/arch/arm64/boot/dts/exynos/exynos8895-dream2lte_common.dtsi
++++ b/kernel/arch/arm64/boot/dts/exynos/exynos8895-dream2lte_common.dtsi
+@@
+-	/* Alice: keep the 2704 MHz M2 OPP available; runtime controller caps normal use at 2314 MHz. */
++	/* Alice V2: keep the 2704 MHz M2 OPP available; runtime controller caps normal use at 2400 MHz. */
+ 	cpufreq {
+ 		domain@1 {
+ 			max-freq = <2704000>;
+ 		};
+ 	};
